@@ -1,6 +1,6 @@
 [package]
 name = "xcoc-mobile-ffi"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -14,7 +14,7 @@ jni-host-tests = ["dep:jni", "xcsc/jni"]
 
 [dependencies]
 xcoc = { path = "../.." }
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "d3e9b8db84e4ead70ec0bf8a596dbad697f7db24", version = "=1.0.1", features = ["mobile-ffi"] }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "4f7db625e331a9436a5aedec2f3b874cdc1c5d6f", version = "=1.0.2", features = ["mobile-ffi"] }
 base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,7 +24,7 @@ jni = { version = "=0.22.4", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "=0.22.4"
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "d3e9b8db84e4ead70ec0bf8a596dbad697f7db24", version = "=1.0.1", features = ["jni", "mobile-ffi"] }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "4f7db625e331a9436a5aedec2f3b874cdc1c5d6f", version = "=1.0.2", features = ["jni", "mobile-ffi"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -392,18 +392,34 @@ struct RuntimeCamera {
     resolved: Option<ResolvedDevice>,
     error: Option<String>,
     retry_at: Instant,
+    recording_error: Option<String>,
+    recording_retry_at: Option<Instant>,
     generation: Uuid,
     resolving: bool,
 }
 
 impl RuntimeCamera {
     fn should_resolve(&self, now: Instant) -> bool {
-        !self.resolving && (self.resolved.is_none() || self.error.is_some()) && now >= self.retry_at
+        !self.resolving
+            && if self.resolved.is_none() || self.error.is_some() {
+                now >= self.retry_at
+            } else {
+                self.recording_retry_at
+                    .is_some_and(|retry_at| now >= retry_at)
+            }
     }
 
     fn mark_error(&mut self, error: String) {
+        // A newer media failure must invalidate an already running source probe.
+        self.generation = Uuid::new_v4();
+        self.resolving = false;
         self.error = Some(error);
         self.retry_at = Instant::now() + Duration::from_secs(30);
+    }
+
+    fn mark_recording_error(&mut self, error: String) {
+        self.recording_error = Some(error);
+        self.recording_retry_at = Some(Instant::now() + Duration::from_secs(30));
     }
 }
 
@@ -1633,6 +1649,8 @@ fn launch_queued_command_tasks(
                     resolved: current.resolved.clone(),
                     error: None,
                     retry_at: Instant::now(),
+                    recording_error: None,
+                    recording_retry_at: None,
                     generation: current.generation,
                     resolving: false,
                 },
@@ -1708,6 +1726,8 @@ fn new_runtime_camera() -> RuntimeCamera {
         resolved: None,
         error: None,
         retry_at: Instant::now(),
+        recording_error: None,
+        recording_retry_at: None,
         generation: Uuid::new_v4(),
         resolving: false,
     }
@@ -1836,7 +1856,8 @@ fn build_snapshot_request(
                 } else {
                     "pending"
                 },
-                health_message: error,
+                health_message: error
+                    .or_else(|| current.and_then(|current| current.recording_error.clone())),
             }
         })
         .into_iter()
@@ -2000,7 +2021,11 @@ async fn reconcile_local_recorders(
         if let std::collections::hash_map::Entry::Vacant(entry) = children.entry(key) {
             let Some(source) = runtime
                 .get(&camera.id)
-                .filter(|runtime| runtime.error.is_none())
+                .filter(|runtime| {
+                    runtime.error.is_none()
+                        && !runtime.resolving
+                        && runtime.recording_retry_at.is_none()
+                })
                 .and_then(|runtime| runtime.resolved.as_ref())
                 .and_then(|device| device.stream_source("main").ok())
             else {
@@ -2012,10 +2037,13 @@ async fn reconcile_local_recorders(
             {
                 Ok(child) => {
                     entry.insert(child);
+                    if let Some(current) = runtime.get_mut(&camera.id) {
+                        current.recording_error = None;
+                    }
                 }
                 Err(error) => {
                     if let Some(current) = runtime.get_mut(&camera.id) {
-                        current.mark_error(safe_error(&error));
+                        current.mark_recording_error(safe_error(&error));
                     }
                 }
             }
@@ -2107,7 +2135,11 @@ async fn reap_children(
             .and_then(|value| Uuid::parse_str(value).ok())
             && let Some(camera) = runtime.get_mut(&id)
         {
-            camera.mark_error("media process exited; retrying".to_owned());
+            if key.ends_with(":record") {
+                camera.mark_recording_error("local recording process exited; retrying".to_owned());
+            } else {
+                camera.mark_error("media process exited; retrying".to_owned());
+            }
         }
     }
 }
@@ -2188,6 +2220,14 @@ fn collect_resolved_cameras(
                     Ok(device) => {
                         current.resolved = Some(device);
                         current.error = None;
+                        // Reprobe a failed recorder's source before retrying, without
+                        // turning an output/storage failure into a publishing outage.
+                        if current
+                            .recording_retry_at
+                            .is_some_and(|retry_at| Instant::now() >= retry_at)
+                        {
+                            current.recording_retry_at = None;
+                        }
                     }
                     Err(error) => {
                         runtime_event(
