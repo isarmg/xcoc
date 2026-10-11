@@ -32,5 +32,5 @@ XCOC_TEST_MEDIAMTX=/absolute/path/to/mediamtx bash scripts/test-media.sh
 `protocol/` 保存固定服务端源码的受控契约，`config/` 保存无凭据样例，`packaging/` 保存桌面安装器，
 `scripts/` 提供移动库构建，`docs/` 描述配置与运行。
 
-代码采用 [Apache License 2.0](../LICENSE-APACHE)。当前 1.1.0 的软件版本与公共支撑 1.0.0、edge v1、
+代码采用 [Apache License 2.0](../LICENSE-APACHE)。当前 1.1.0 的软件版本与公共支撑 1.0.1、edge v1、
 ABI v1 分别管理。实际分发能力以对应源码的成功构建、目标平台验收和已发布资产为准。

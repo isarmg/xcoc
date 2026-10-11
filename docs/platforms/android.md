@@ -71,6 +71,8 @@ Android 的 APK 必须使用所有者稳定保管的 release key 签名后才能
 
 ## 本地 Release 构建
 
+发布校验与打包需要 Python 3.11+；先用 `python3 --version` 核对版本。
+
 先完成上面的对应平台原生库和工具链准备。Android 还需构建供 JVM 测试使用的宿主 JNI bridge，
 并按桌面文档准备宿主媒体库。然后执行：
 

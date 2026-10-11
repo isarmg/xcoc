@@ -55,6 +55,8 @@ App Store 验证。所有者需要使用自己的 Apple 签名身份、开发团
 
 ## 本地 Release 构建
 
+发布校验与打包需要 Python 3.11+；先用 `python3 --version` 核对版本，不能依赖旧版系统 Python。
+
 生成 Xcode 工程后，回到仓库根目录，使用与 CI 相同的 Release 参数：
 
 ```sh
