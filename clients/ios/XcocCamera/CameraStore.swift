@@ -6,8 +6,10 @@ import UIKit
 final class CameraStore: ObservableObject {
     @Published var status = "先在 Server 创建实例并填写授权码"
     @Published var paired = false
+    @Published var pairing = false
     @Published var running = false
     @Published var stopping = false
+    private let pairOperation: (String, String, String) throws -> Void
     private let control = DispatchQueue(label: "xcoc.control")
     private let lock = NSLock()
     private let encoder = CameraEncoder()
@@ -19,7 +21,8 @@ final class CameraStore: ObservableObject {
     private var height = 720
     private var timer: DispatchSourceTimer?
 
-    init() {
+    init(pairOperation: ((String, String, String) throws -> Void)? = nil) {
+        self.pairOperation = pairOperation ?? CameraStore.savePairing
         paired = (try? KeychainPairing.read("pairing")) != nil
         if paired { status = "已配对，可启动摄像头" }
         encoder.onFrame = { [weak self] data, timestamp, sps, pps, width, height in
@@ -32,23 +35,27 @@ final class CameraStore: ObservableObject {
         }
         encoder.onFailure = { [weak self] in DispatchQueue.main.async { self?.stop(); self?.status = "摄像头不可用，请核对权限" } }
     }
+    private static func savePairing(server: String, code: String, name: String) throws {
+        let result = try RustBridge.call(0, ["operation": "pair", "server": server.trimmingCharacters(in: .whitespacesAndNewlines), "authorization_code": code.trimmingCharacters(in: .whitespacesAndNewlines), "name": name.trimmingCharacters(in: .whitespacesAndNewlines), "installation_id": try KeychainPairing.installationId()])
+        try KeychainPairing.save("pairing", data: JSONSerialization.data(withJSONObject: result))
+    }
     func pair(server: String, code: String, name: String) {
-        guard !running, !stopping else { status = "请先停止摄像头再配对"; return }
+        guard !running, !stopping, !pairing else { return }
+        pairing = true
         status = "正在配对"
         control.async {
             do {
-                let result = try RustBridge.call(0, ["operation": "pair", "server": server.trimmingCharacters(in: .whitespacesAndNewlines), "authorization_code": code.trimmingCharacters(in: .whitespacesAndNewlines), "name": name.trimmingCharacters(in: .whitespacesAndNewlines), "installation_id": try KeychainPairing.installationId()])
-                try KeychainPairing.save("pairing", data: JSONSerialization.data(withJSONObject: result))
-                DispatchQueue.main.async { self.paired = true; self.status = "已配对，可启动摄像头" }
-            } catch { DispatchQueue.main.async { self.status = "配对失败，请核对地址、授权码和网络" } }
+                try self.pairOperation(server, code, name)
+                DispatchQueue.main.async { self.pairing = false; self.paired = true; self.status = "已配对，可启动摄像头" }
+            } catch { DispatchQueue.main.async { self.pairing = false; self.status = "配对失败，请核对地址、授权码和网络" } }
         }
     }
     func start(front: Bool) {
-        guard !running, !stopping, paired else { return }
+        guard !running, !stopping, !pairing, paired else { return }
         AVCaptureDevice.requestAccess(for: .video) { allowed in
             DispatchQueue.main.async {
+                guard !self.running, !self.stopping, !self.pairing, UIApplication.shared.applicationState == .active else { return }
                 guard allowed else { self.status = "请在系统设置中允许摄像头权限"; return }
-                guard !self.running, !self.stopping, UIApplication.shared.applicationState == .active else { return }
                 self.running = true; self.status = "正在启动摄像头"
                 let generation = self.lifecycle.begin()
                 self.control.async {

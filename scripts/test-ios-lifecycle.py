@@ -43,6 +43,20 @@ class LifecycleSourceTests(unittest.TestCase):
         self.assertLess(close, capture)
         self.assertIn("poll(active: true, generation: generation)", start)
 
+    def test_pairing_reserves_the_store_until_async_completion(self):
+        source = (ROOT / "CameraStore.swift").read_text()
+        pair = block(source, "func pair(server:")
+        self.assertIn("@Published var pairing = false", source)
+        self.assertIn("guard !running, !stopping, !pairing", pair)
+        self.assertLess(pair.index("pairing = true"), pair.index("control.async"))
+        self.assertEqual(pair.count("self.pairing = false"), 2)
+        start = block(source, "func start(front:")
+        self.assertIn("guard !running, !stopping, !pairing, paired", start)
+        self.assertLess(start.index("!self.pairing"), start.index("guard allowed"))
+        view = (ROOT / "XcocCameraApp.swift").read_text()
+        self.assertIn(".disabled(camera.running || camera.stopping || camera.pairing)", view)
+        self.assertIn(".disabled(!camera.paired || camera.stopping || camera.pairing)", view)
+
     def test_encoder_start_cannot_escape_its_serial_queue_operation(self):
         source = (ROOT / "CameraEncoder.swift").read_text()
         start = block(source, "func start(front:")
