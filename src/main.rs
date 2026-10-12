@@ -428,6 +428,10 @@ fn main() -> std::process::ExitCode {
         .nth(1)
         .is_some_and(|arg| arg == "media-worker")
     {
+        // SAFETY: this private worker branch runs before creating a runtime or
+        // starting native media/cancellation threads. It affects only the
+        // isolated worker process, including direct worker invocations.
+        unsafe { std::env::set_var("TZ", "UTC0") };
         return xcoc::media_worker::entry();
     }
     match run_main() {
@@ -2072,10 +2076,10 @@ async fn spawn_recorder(source: &device::MediaSource, camera_id: Uuid) -> anyhow
 }
 
 fn local_recording_pattern(root: &Path) -> PathBuf {
-    // The offset distinguishes a repeated daylight-saving hour; a per-worker
-    // identity preserves the previous segment after a same-second restart.
+    // The media worker expands this pattern in UTC. A per-worker identity
+    // preserves the previous segment after a same-second restart.
     root.join(format!(
-        "%Y-%m-%d_%H-%M-%S%z_{}.mp4",
+        "%Y-%m-%d_%H-%M-%SZ_{}.mp4",
         Uuid::new_v4().simple()
     ))
 }

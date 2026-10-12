@@ -113,6 +113,8 @@ fn worker_command(executable: &Path) -> Command {
         .kill_on_drop(true);
     // Do not inherit optional FFmpeg report destinations or diagnostic flags.
     command.env_remove("FFREPORT");
+    // FFmpeg's segment muxer uses process calendar time for strftime filenames.
+    command.env("TZ", "UTC0");
     // Terminal Ctrl+C belongs to the supervisor. A direct console signal must
     // not terminate a recorder before it receives the private stop command.
     #[cfg(unix)]
@@ -490,11 +492,14 @@ mod tests {
             command.as_std().get_args().collect::<Vec<_>>(),
             ["media-worker"]
         );
+        assert!(command.as_std().get_envs().all(|(name, value)| {
+            (name == "FFREPORT" && value.is_none())
+                || (name == "TZ" && value == Some(std::ffi::OsStr::new("UTC0")))
+        }));
         assert!(
-            command
-                .as_std()
-                .get_envs()
-                .all(|(name, value)| name == "FFREPORT" && value.is_none())
+            command.as_std().get_envs().any(|(name, value)| {
+                name == "TZ" && value == Some(std::ffi::OsStr::new("UTC0"))
+            })
         );
     }
 

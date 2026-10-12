@@ -1,5 +1,7 @@
 # 依赖和 unsafe 审查
 
+录像的独立媒体工作进程在 `main` 的私有 `media-worker` 分支、创建 runtime 或原生线程之前固定 `TZ=UTC0`。该环境初始化的 unsafe 仅发生在单线程进程启动阶段，不修改运行中的主服务环境；Windows 首次原生检查通过线程安全的 `INIT_ONCE` 设置 CRT 的 `TZ` 并调用 `_tzset`，使 CRT 和操作系统环境副本一致，后续能力检查不再修改环境。片段命名统一使用 UTC，超时和帧时基仍为单调计时。
+
 Rust 固定 1.99.0；本轮选择 rand 0.10、base64 0.23、SHA-1/SHA-2 0.11，保留适用的 reqwest 0.13、Tokio 1、windows-service 0.8.1 和 windows-sys 0.61.2。协议和持久状态的版本由产品权威合同确定，与软件发行号分离。Cargo.lock 无 rusqlite；此客户端不持有 SQLite 数据库。
 
 | 位置 | 保留原因与安全边界 | 安全替代或验证 |

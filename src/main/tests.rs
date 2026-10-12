@@ -1338,16 +1338,17 @@ fn shared_configuration_io_rejects_links_public_credentials_and_unsafe_replaceme
 }
 
 #[test]
-fn local_recording_names_survive_daylight_saving_fallback() {
+fn local_recording_names_use_utc_calendar_time() {
     let root = Path::new("recordings");
     let pattern = local_recording_pattern(root);
     let name = pattern.file_name().unwrap().to_str().unwrap();
-    let before = chrono::DateTime::parse_from_rfc3339("2026-11-01T01:15:00-04:00").unwrap();
-    let after = chrono::DateTime::parse_from_rfc3339("2026-11-01T01:15:00-05:00").unwrap();
-    assert_ne!(
-        before.format(name).to_string(),
-        after.format(name).to_string(),
-        "the repeated daylight-saving hour must not reuse an earlier segment"
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-01T05:15:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert!(
+        now.format(name)
+            .to_string()
+            .starts_with("2026-11-01_05-15-00Z_")
     );
     assert_eq!(pattern.parent(), Some(root));
     assert_eq!(pattern.extension().unwrap(), "mp4");
@@ -1358,7 +1359,9 @@ fn local_recording_names_survive_same_second_restarts() {
     let root = Path::new("recordings");
     let first = local_recording_pattern(root);
     let restarted = local_recording_pattern(root);
-    let now = chrono::DateTime::parse_from_rfc3339("2026-11-01T01:15:00-04:00").unwrap();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-01T05:15:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
     let filename = |path: &Path| {
         now.format(path.file_name().unwrap().to_str().unwrap())
             .to_string()

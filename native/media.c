@@ -6,6 +6,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <stdlib.h>
+#include <time.h>
+#include <windows.h>
+#endif
 
 #include <libavcodec/avcodec.h>
 #include <libavcodec/bsf.h>
@@ -76,9 +81,32 @@ static int has_option(const AVClass *class, const char *name) {
            av_opt_find(&class, name, NULL, 0, AV_OPT_SEARCH_FAKE_OBJ) != NULL;
 }
 
+#ifdef _WIN32
+static INIT_ONCE utc_initialized = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK initialize_utc(PINIT_ONCE once, PVOID parameter,
+                                    PVOID *context) {
+    (void)once;
+    (void)parameter;
+    (void)context;
+    /* The isolated worker initializes before media work. Synchronize the CRT
+     * environment too; the Rust Windows environment API updates the OS copy.
+     * Subsequent capability checks can run after the stop listener starts;
+     * INIT_ONCE prevents a repeated or concurrent environment mutation. */
+    if (_putenv_s("TZ", "UTC0") != 0)
+        return FALSE;
+    _tzset();
+    return TRUE;
+}
+#endif
+
 int xcoc_media_check(void) {
     const AVInputFormat *input;
     const AVOutputFormat *output;
+#ifdef _WIN32
+    if (!InitOnceExecuteOnce(&utc_initialized, initialize_utc, NULL, NULL))
+        return 1;
+#endif
     silence_logs();
     /* Older RTSP implementations accepted neither tls_verify nor its safe
      * propagation to the internal TLS connection. Never downgrade to them. */

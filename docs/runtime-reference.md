@@ -8,6 +8,8 @@ Unix 配置读写使用 xcsc `ConfigurationDirectory`：文件必须是服务用
 
 运行错误使用 xcsc 内部 `xcsc::log` 输出 UTC JSON 行到 stderr；摄像头事件带规范化的 UUID `instance_id`，失败使用稳定 `error_code`。不输出摄像头密码、RTSP URL、内部错误链或 媒体库原始日志或本地采集进程 stderr。日志写入失败返回明确错误，服务宿主可观察退出。
 
+协议时间和日志统一为 UTC；有合法 RFC3339 偏移的输入按同一时间点归一化。录像工作进程独立使用 UTC 时钟，文件名为 `YYYY-MM-DD_HH-MM-SSZ_<worker UUID>.mp4`，同秒重启仍不会覆盖前一工作进程的片段。超时、重试和媒体帧时基继续使用单调计时。
+
 
 ## 能力与工作预算
 
