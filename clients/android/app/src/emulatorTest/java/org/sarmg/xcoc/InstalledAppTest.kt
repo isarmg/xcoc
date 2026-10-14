@@ -12,6 +12,7 @@ class InstalledAppTest : InstrumentationTestCase() {
             val intent = Intent(instrumentation.targetContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             val activity: Activity = instrumentation.startActivitySync(intent)
+            dismissNotificationPrompt()
             instrumentation.waitForIdleSync()
             assertFalse(activity.isFinishing)
             instrumentation.runOnMainSync { activity.finish() }
@@ -27,6 +28,47 @@ class InstalledAppTest : InstrumentationTestCase() {
             }
             assertTrue("Activity destruction did not complete before relaunch", destroyed.get())
         }
+    }
+
+    private fun dismissNotificationPrompt() {
+        // First launch asks for notifications. Explicitly deny this optional
+        // permission so no system Activity survives in the task during relaunch.
+        // Do not grant notifications, camera, or access to any user account.
+        val automation = instrumentation.uiAutomation
+        automation.serviceInfo = automation.serviceInfo.apply {
+            flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+        }
+        val permissionPackages = setOf("com.android.permissioncontroller", "com.google.android.permissioncontroller")
+        val deadline = android.os.SystemClock.uptimeMillis() + 5_000
+        var denied = false
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            val root = automation.rootInActiveWindow
+            if (root?.packageName?.toString() in permissionPackages) {
+                checkNotNull(root)
+                val messages = permissionPackages.flatMap {
+                    root.findAccessibilityNodeInfosByViewId("$it:id/permission_message")
+                }
+                assertTrue("Unexpected system permission prompt; refusing to interact",
+                    messages.any { it.text?.toString()?.contains("notification", ignoreCase = true) == true })
+                val buttons = permissionPackages
+                    .flatMap { root.findAccessibilityNodeInfosByViewId("$it:id/permission_deny_button") }
+                if (buttons.isNotEmpty()) {
+                    assertTrue("Notification denial click failed", buttons.first().performAction(
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
+                    denied = true
+                    break
+                }
+            }
+            android.os.SystemClock.sleep(50)
+        }
+        val dismissedDeadline = android.os.SystemClock.uptimeMillis() + 5_000
+        while (automation.rootInActiveWindow?.packageName?.toString() in permissionPackages &&
+            android.os.SystemClock.uptimeMillis() < dismissedDeadline) {
+            android.os.SystemClock.sleep(50)
+        }
+        assertFalse("System permission dialog remained over the installed application",
+            automation.rootInActiveWindow?.packageName?.toString() in permissionPackages)
+        android.util.Log.i("XcocInstalledTest", "Notification prompt denied=$denied; system dialog dismissed")
     }
 
     fun testInstalledJniOpensStopsClosesAndRejectsStaleHandle() {
