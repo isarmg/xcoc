@@ -63,6 +63,32 @@ class CacheContractTests(unittest.TestCase):
         build = (ROOT / 'clients/android/app/build.gradle.kts').read_text()
         self.assertIn('src/emulatorTest/java', build)
 
+    def test_android_diagnostics_do_not_fabricate_files_after_uninstall(self):
+        import tempfile
+        script = (ROOT / 'scripts/test-android-install.sh').read_text()
+        capture = script.split("  # adb exec-out can return zero", 1)[1].split("  adb emu kill", 1)[0]
+        capture = "  # adb exec-out can return zero" + capture
+        for installed, present in [('false', 'false'), ('true', 'false'), ('true', 'true')]:
+            with self.subTest(installed=installed, present=present), tempfile.TemporaryDirectory() as output:
+                mock = r'''adb() {
+  if [[ "$*" == "shell pm path org.sarmg.xcoc" ]]; then
+    [[ "$installed" == true ]] && echo package:/fixture/base.apk
+  elif [[ "$*" == shell\ run-as* ]]; then
+    [[ "$present" == true ]]
+  elif [[ "$*" == exec-out* ]]; then
+    echo genuine-private-diagnostic
+  else
+    return 1
+  fi
+}
+'''
+                result = subprocess.run(['bash', '-eu', '-c', mock + capture], env={
+                    'output': output, 'installed': installed, 'present': present})
+                self.assertEqual(result.returncode, 0)
+                for name in ['permission-ui.txt', 'permission-ui.png']:
+                    self.assertEqual((pathlib.Path(output) / name).exists(),
+                                     installed == 'true' and present == 'true')
+
     def test_aggregate_gate_rejects_failed_missing_and_cancelled_validation(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
         gate = workflow.split('      - name: Require every iOS configuration\n', 1)[1].split('\n  native-build:', 1)[0]

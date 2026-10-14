@@ -15,11 +15,17 @@ pid=""
 adb() { timeout --kill-after=2s 20s "$sdk/platform-tools/adb" -s "$serial" "$@"; }
 cleanup() {
   adb logcat -d > "$output/logcat.txt" 2>&1 || true
-  for diagnostic in permission-ui.txt permission-ui.png; do
-    if ! adb exec-out run-as org.sarmg.xcoc cat "files/$diagnostic" > "$output/$diagnostic" 2>/dev/null; then
-      rm -f "$output/$diagnostic"
-    fi
-  done
+  # adb exec-out can return zero even when run-as prints an error. Never
+  # create a diagnostic artifact for an uninstalled package or absent file.
+  if adb shell pm path org.sarmg.xcoc 2>/dev/null | grep -q '^package:'; then
+    for diagnostic in permission-ui.txt permission-ui.png; do
+      if adb shell run-as org.sarmg.xcoc test -f "files/$diagnostic" 2>/dev/null; then
+        if ! adb exec-out run-as org.sarmg.xcoc cat "files/$diagnostic" > "$output/$diagnostic" 2>/dev/null; then
+          rm -f "$output/$diagnostic"
+        fi
+      fi
+    done
+  fi
   adb emu kill || true
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
@@ -59,6 +65,25 @@ for pass in 1 2; do
   grep -q 'Status: ok' "$output/launch-$pass.txt"
   sleep 2
   adb shell pidof org.sarmg.xcoc | grep -Eq '[0-9]+'
+  # am start -W can report the transient permission Activity even when Android
+  # immediately applies the previous denial. Require the actual resumed and
+  # focused main screen, without granting permissions or dismissing other UI.
+  foreground=false
+  foreground_deadline=$((SECONDS + 15))
+  while ((SECONDS < foreground_deadline)); do
+    adb shell dumpsys activity activities > "$output/activities-$pass.txt"
+    adb shell dumpsys window > "$output/windows-$pass.txt"
+    if grep -Eq '(mResumedActivity|topResumedActivity)[=:].*org\.sarmg\.xcoc/(\.MainActivity|org\.sarmg\.xcoc\.MainActivity)([[:space:]}]|$)' "$output/activities-$pass.txt" &&
+       grep -Eq 'mCurrentFocus=.*org\.sarmg\.xcoc/(\.MainActivity|org\.sarmg\.xcoc\.MainActivity)([[:space:]}]|$)' "$output/windows-$pass.txt"; then
+      foreground=true
+      break
+    fi
+    sleep 1
+  done
+  [[ "$foreground" == true ]] || { echo "Cold start $pass did not resume and focus MainActivity within 15 seconds." >&2; exit 1; }
+  adb shell dumpsys package org.sarmg.xcoc > "$output/permissions-$pass.txt"
+  grep -Eq 'android\.permission\.POST_NOTIFICATIONS: granted=false' "$output/permissions-$pass.txt"
+  echo "Cold start $pass resumed and focused MainActivity with notifications still denied."
 done
 adb logcat -d -b crash > "$output/crash.txt"
 if grep -Eq 'FATAL EXCEPTION|Fatal signal|UnsatisfiedLinkError' "$output/crash.txt"; then cat "$output/crash.txt"; exit 1; fi
