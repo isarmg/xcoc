@@ -1217,6 +1217,7 @@ async fn run(
     let (mut command_results, mut completed_commands) = ledger.receipts();
     let command_ledger = Arc::new(tokio::sync::Mutex::new(ledger));
     let mut publish_grants: HashMap<Uuid, Vec<PublishGrant>> = HashMap::new();
+    let mut rejected_authorizations = HashMap::new();
     let mut resolve_tasks = tokio::task::JoinSet::new();
     let mut snapshot_tasks: tokio::task::JoinSet<SnapshotTaskResult> = tokio::task::JoinSet::new();
     let mut snapshot_inflight = HashSet::new();
@@ -1248,14 +1249,7 @@ async fn run(
             let mut changed = HashSet::new();
             let needs_reload = tick || config_fingerprint(path)? != config_stamp;
             if needs_reload {
-                changed = reload_configuration(
-                    path,
-                    &mut state,
-                    &mut runtime,
-                    &mut children,
-                    &mut stopping_children,
-                )
-                .await?;
+                changed = reload_configuration(path, &mut state, &mut runtime)?;
                 config_stamp = config_fingerprint(path)?;
             }
             if needs_reload {
@@ -1269,41 +1263,43 @@ async fn run(
                         if let Some(handle) = snapshot_abort_handles.remove(id) {
                             handle.abort();
                         }
-                        if let Some(handle) = command_abort_handles.remove(id) {
-                            handle.abort();
-                        }
-                        command_queues.remove(id);
                         snapshot_inflight.remove(id);
                         snapshot_command_reservations.remove(id);
                         publish_grants.remove(id);
                     }
-                    let canceled_commands = command_inflight_ids
-                        .iter()
-                        .filter(|(_, camera_id)| changed.contains(camera_id))
-                        .map(|(command_id, camera_id)| (*command_id, *camera_id))
-                        .collect::<Vec<_>>();
-                    for (command_id, camera_id) in canceled_commands {
-                        command_inflight_ids.remove(&command_id);
+                    for camera_id in &changed {
+                        let results = cancel_instance_commands(
+                            *camera_id,
+                            &mut command_abort_handles,
+                            &mut command_queues,
+                            &mut command_inflight_ids,
+                            &command_ledger,
+                        )
+                        .await?;
                         if state
                             .instances
                             .iter()
-                            .any(|instance| instance.instance_id == camera_id)
+                            .any(|instance| instance.instance_id == *camera_id)
                         {
-                            let result = command_ledger.lock().await.cancel(command_id)?;
-                            completed_commands.insert(
-                                command_id,
-                                (
-                                    result.clone(),
-                                    chrono::Utc::now() + chrono::Duration::seconds(120),
-                                ),
-                            );
-                            command_results
-                                .entry(camera_id)
-                                .or_default()
-                                .insert(command_id, result);
+                            for result in results {
+                                completed_commands.insert(
+                                    result.id,
+                                    (
+                                        result.clone(),
+                                        chrono::Utc::now() + chrono::Duration::seconds(120),
+                                    ),
+                                );
+                                command_results
+                                    .entry(*camera_id)
+                                    .or_default()
+                                    .insert(result.id, result);
+                            }
                         }
                     }
                 }
+                // Invalidate control work before any graceful media-stop await:
+                // commands retain the old resolved device until explicitly canceled.
+                stop_reconfigured_media(&changed, &mut children, &mut stopping_children).await;
                 reap_children(&mut children, &mut runtime).await;
                 collect_resolved_cameras(&mut resolve_tasks, &mut runtime)?;
                 launch_due_cameras(&device_client, &state, &mut runtime, &mut resolve_tasks);
@@ -1332,6 +1328,7 @@ async fn run(
                 .map(|instance| instance.instance_id)
                 .collect::<HashSet<_>>();
             command_results.retain(|id, _| paired_ids.contains(id));
+            rejected_authorizations.retain(|id, _| paired_ids.contains(id));
             let mut completed = completed_snapshot;
             loop {
                 let result = completed.take().or_else(|| snapshot_tasks.try_join_next());
@@ -1367,6 +1364,7 @@ async fn run(
                 snapshot_abort_handles.remove(&instance_id);
                 match result {
                     Ok(response) => {
+                        rejected_authorizations.remove(&instance_id);
                         command_ledger
                             .lock()
                             .await
@@ -1377,11 +1375,51 @@ async fn run(
                         commands.extend(response.commands);
                     }
                     Err(error) => {
+                        if xcoc::snapshot_authorization_rejected(&error) {
+                            // The response revision was checked above: a late 401 must
+                            // not disable a replacement pairing. Local recorders remain independent.
+                            if let Some(instance) = state
+                                .instances
+                                .iter()
+                                .find(|instance| instance.instance_id == instance_id)
+                            {
+                                rejected_authorizations
+                                    .insert(instance_id, authorization_fingerprint(instance));
+                            }
+                            publish_grants.remove(&instance_id);
+                            grants_changed = true;
+                            *snapshot_revisions.entry(instance_id).or_default() += 1;
+                            for result in cancel_instance_commands(
+                                instance_id,
+                                &mut command_abort_handles,
+                                &mut command_queues,
+                                &mut command_inflight_ids,
+                                &command_ledger,
+                            )
+                            .await?
+                            {
+                                completed_commands.insert(
+                                    result.id,
+                                    (
+                                        result.clone(),
+                                        chrono::Utc::now() + chrono::Duration::seconds(120),
+                                    ),
+                                );
+                                command_results
+                                    .entry(instance_id)
+                                    .or_default()
+                                    .insert(result.id, result);
+                            }
+                        }
                         runtime_event(
                             "xcoc.snapshot.request_failed",
                             Some(instance_id),
                             xcsc::log::Level::Warn,
-                            "The Server snapshot request failed.",
+                            if xcoc::snapshot_authorization_rejected(&error) {
+                                "Server authorization was rejected; update the pairing before reconnecting."
+                            } else {
+                                "The Server snapshot request failed."
+                            },
                             device_error_code(&error),
                         )?;
                     }
@@ -1389,6 +1427,11 @@ async fn run(
             }
             if tick {
                 for instance in &state.instances {
+                    if rejected_authorizations.get(&instance.instance_id)
+                        == Some(&authorization_fingerprint(instance))
+                    {
+                        continue;
+                    }
                     if !snapshot_inflight.insert(instance.instance_id) {
                         continue;
                     }
@@ -1594,6 +1637,42 @@ async fn stop_media_children(children: impl IntoIterator<Item = Child>, stopping
             );
         }
     }
+}
+
+fn authorization_fingerprint(instance: &CameraInstance) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let server =
+        validate_server_origin(&instance.server).expect("configured Server origin was validated");
+    let mut digest = Sha256::new();
+    digest.update(server.as_str().len().to_be_bytes());
+    digest.update(server.as_str().as_bytes());
+    digest.update(instance.access_token.as_bytes());
+    digest.finalize().into()
+}
+
+async fn cancel_instance_commands(
+    camera_id: Uuid,
+    handles: &mut HashMap<Uuid, tokio::task::AbortHandle>,
+    queues: &mut HashMap<Uuid, Vec<DeviceCommand>>,
+    inflight: &mut HashMap<Uuid, Uuid>,
+    ledger: &Arc<tokio::sync::Mutex<command_ledger::CommandLedger>>,
+) -> anyhow::Result<Vec<CommandResult>> {
+    if let Some(handle) = handles.remove(&camera_id) {
+        handle.abort();
+    }
+    queues.remove(&camera_id);
+    let ids = inflight
+        .iter()
+        .filter(|(_, id)| **id == camera_id)
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    let mut ledger = ledger.lock().await;
+    let mut results = Vec::with_capacity(ids.len());
+    for id in ids {
+        inflight.remove(&id);
+        results.push(ledger.cancel(id)?);
+    }
+    Ok(results)
 }
 
 const MAX_INFLIGHT_COMMANDS: usize = 256;
@@ -1840,14 +1919,19 @@ fn apply_reloaded_state(
     Ok(changed)
 }
 
-async fn reload_configuration(
+fn reload_configuration(
     path: &Path,
     state: &mut LocalState,
     runtime: &mut HashMap<Uuid, RuntimeCamera>,
+) -> anyhow::Result<HashSet<Uuid>> {
+    apply_reloaded_state(state, load_state(path)?, runtime)
+}
+
+async fn stop_reconfigured_media(
+    changed: &HashSet<Uuid>,
     children: &mut HashMap<String, Child>,
     stopping: &mut MediaTasks,
-) -> anyhow::Result<HashSet<Uuid>> {
-    let changed = apply_reloaded_state(state, load_state(path)?, runtime)?;
+) {
     let stale = children
         .keys()
         .filter(|key| {
@@ -1860,7 +1944,6 @@ async fn reload_configuration(
         .collect::<Vec<_>>();
     let stopped = stale.into_iter().filter_map(|key| children.remove(&key));
     stop_media_children(stopped, stopping).await;
-    Ok(changed)
 }
 
 fn build_snapshot_request(

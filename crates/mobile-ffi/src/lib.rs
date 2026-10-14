@@ -112,7 +112,7 @@ fn call_impl(handle: u64, input: &str) -> Result<Payload, FfiError> {
         }
         Operation::Close => {
             let session = sessions().remove(Handle::from_u64(handle))?;
-            session.client.stop();
+            session.client.close();
             Ok(Payload::default())
         }
     }
@@ -178,6 +178,37 @@ mod tests {
         assert!(call_impl(123, r#"{"operation":"stop"}"#).is_err());
         assert!(call_impl(0, r#"{"operation":"stop","secret":"private"}"#).is_err());
     }
+    #[test]
+    fn close_invalidates_session_already_acquired_by_another_call() {
+        let runtime = runtime().unwrap();
+        let client = {
+            let _entered = runtime.enter();
+            MobileClient::open(Pairing {
+                server: "https://127.0.0.1:9".into(),
+                installation_id: Uuid::new_v4(),
+                instance_id: Uuid::new_v4(),
+                access_token: "a".repeat(43),
+                name: "synthetic".into(),
+            })
+            .unwrap()
+        };
+        let handle = sessions()
+            .insert(Arc::new(Session { runtime, client }))
+            .unwrap();
+        // The old call owns its Arc but has not entered MobileClient::poll yet.
+        let old_call = sessions().get(handle).unwrap();
+        call_impl(handle.to_u64(), r#"{"operation":"close"}"#).unwrap();
+        let metadata: CaptureMetadata = serde_json::from_str(r#"{"platform":"ios","model":"synthetic","width":1280,"height":720,"frame_rate":30,"active":true}"#).unwrap();
+        let error = old_call
+            .runtime
+            .block_on(old_call.client.poll(&metadata, &[0x67, 1, 2, 3], &[0x68]))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("closed"),
+            "closed Arc still attempted a network poll: {error}"
+        );
+    }
+
     #[test]
     fn native_call_uses_owned_foundation_results() {
         let input = br#"{"operation":"stop"}"#;

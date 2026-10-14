@@ -129,7 +129,13 @@ async fn native_recorders_finalize_on_shutdown_reload_and_disable() {
     );
     let data = fs::read(source).unwrap();
 
-    for mode in ["shutdown", "reload", "disable", "parent_pipe_closed"] {
+    for mode in [
+        "shutdown",
+        "reload",
+        "disable",
+        "parent_pipe_closed",
+        "authorization_rejected",
+    ] {
         let output = fixture.path().join(mode);
         fs::create_dir(&output).unwrap();
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -204,6 +210,25 @@ async fn native_recorders_finalize_on_shutdown_reload_and_disable() {
         let started = Instant::now();
         let mut stopping = MediaTasks::new();
         match mode {
+            "authorization_rejected" => {
+                let key = format!("{camera_id}:main:record");
+                let original_pid = children[&key].id();
+                // A rejected snapshot withdraws all remote publish grants. The
+                // independent local recorder must keep its process and segment.
+                reconcile_publishers(&mut runtime, &[], &mut children, &mut stopping).await;
+                assert_eq!(children[&key].id(), original_pid);
+                assert!(
+                    children
+                        .get_mut(&key)
+                        .unwrap()
+                        .try_wait()
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(desired_local_recorders(&state).contains(&key));
+                finish_media_shutdown(children.drain().map(|(_, child)| child), &mut stopping)
+                    .await;
+            }
             "shutdown" => {
                 finish_media_shutdown(children.drain().map(|(_, child)| child), &mut stopping).await
             }
@@ -213,15 +238,8 @@ async fn native_recorders_finalize_on_shutdown_reload_and_disable() {
                 next.instances[0].camera.as_mut().unwrap().name = "renamed".into();
                 let config = fixture.path().join("configuration.json");
                 write_private_config(&config, serde_json::to_vec(&next).unwrap());
-                reload_configuration(
-                    &config,
-                    &mut state,
-                    &mut runtime,
-                    &mut children,
-                    &mut stopping,
-                )
-                .await
-                .unwrap();
+                let changed = reload_configuration(&config, &mut state, &mut runtime).unwrap();
+                stop_reconfigured_media(&changed, &mut children, &mut stopping).await;
             }
             "disable" => {
                 state.instances[0].camera.as_mut().unwrap().enabled = false;
@@ -1396,4 +1414,319 @@ async fn cancelled_resolution_does_not_reset_replacement_task() {
     assert!(runtime[&id].resolving);
     assert!(!runtime[&id].should_resolve(Instant::now()));
     tasks.shutdown().await;
+}
+
+#[tokio::test]
+async fn rejected_pairing_stops_snapshot_retries_until_configuration_changes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&requests);
+    let simulator = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 8192];
+            let read = socket.read(&mut request).await.unwrap();
+            assert!(read > 0);
+            counted.fetch_add(1, Ordering::SeqCst);
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let directory = tempdir();
+    let path = directory.path().join("config.json");
+    let mut state = LocalState {
+        format: 1,
+        installation_id: Uuid::new_v4(),
+        instances: vec![CameraInstance {
+            server: format!("http://{address}/"),
+            instance_id: Uuid::new_v4(),
+            access_token: "a".repeat(43),
+            name: "synthetic".into(),
+            camera: None,
+        }],
+    };
+    save_state(&path, &state).unwrap();
+    let (stop, shutdown) = watch::channel(false);
+    let running_path = path.clone();
+    let running = tokio::spawn(async move { run(&running_path, false, Some(shutdown)).await });
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    state.instances[0].name = "renamed without changing authorization".into();
+    save_state(&path, &state).unwrap();
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    let before_reload = requests.load(Ordering::SeqCst);
+    state.instances[0].access_token = "b".repeat(43);
+    save_state(&path, &state).unwrap();
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    stop.send(true).unwrap();
+    running.await.unwrap().unwrap();
+    simulator.abort();
+    assert_eq!(
+        before_reload, 1,
+        "rejected credentials were retried without a new pairing"
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        2,
+        "new pairing must get its own authorization attempt"
+    );
+}
+
+#[tokio::test]
+async fn delayed_rejection_cannot_disable_replacement_pairing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let old_seen = Arc::new(tokio::sync::Notify::new());
+    let release_old = Arc::new(tokio::sync::Notify::new());
+    let replacement_requests = Arc::new(AtomicUsize::new(0));
+    let seen = old_seen.clone();
+    let released = release_old.clone();
+    let counted = replacement_requests.clone();
+    let simulator = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let seen = seen.clone();
+            let released = released.clone();
+            let counted = counted.clone();
+            connections.spawn(async move {
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    header.push(socket.read_u8().await.unwrap());
+                }
+                if String::from_utf8_lossy(&header).contains(&"a".repeat(43)) {
+                    seen.notify_one();
+                    released.notified().await;
+                    let _ = socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                } else {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    let body = serde_json::json!({"protocol":PROTOCOL,"accepted_at":chrono::Utc::now().to_rfc3339(),"publish":[],"commands":[]}).to_string();
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                }
+            });
+        }
+    });
+    let directory = tempdir();
+    let path = directory.path().join("config.json");
+    let mut state = LocalState {
+        format: 1,
+        installation_id: Uuid::new_v4(),
+        instances: vec![CameraInstance {
+            server: format!("http://{address}/"),
+            instance_id: Uuid::new_v4(),
+            access_token: "a".repeat(43),
+            name: "synthetic".into(),
+            camera: None,
+        }],
+    };
+    save_state(&path, &state).unwrap();
+    let (stop, shutdown) = watch::channel(false);
+    let running_path = path.clone();
+    let running = tokio::spawn(async move { run(&running_path, false, Some(shutdown)).await });
+    tokio::time::timeout(Duration::from_secs(5), old_seen.notified())
+        .await
+        .unwrap();
+    state.instances[0].access_token = "b".repeat(43);
+    save_state(&path, &state).unwrap();
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    release_old.notify_one();
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    stop.send(true).unwrap();
+    running.await.unwrap().unwrap();
+    simulator.abort();
+    assert!(
+        replacement_requests.load(Ordering::SeqCst) >= 2,
+        "late old 401 blocked replacement pairing"
+    );
+}
+
+#[tokio::test]
+async fn authorization_cancellation_preserves_unknown_outcomes_and_other_instances() {
+    let camera_id = Uuid::new_v4();
+    let other_id = Uuid::new_v4();
+    let command = |camera_id| DeviceCommand {
+        id: Uuid::new_v4(),
+        camera_id,
+        kind: "ptz".into(),
+        payload: serde_json::json!({"action":"stop"}),
+        expires_at: (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc3339(),
+    };
+    let pending = command(camera_id);
+    let queued = command(camera_id);
+    let other = command(other_id);
+    let (_directory, ledger) =
+        test_command_ledger(&[pending.clone(), queued.clone(), other.clone()]);
+    ledger.lock().await.begin(pending.id).unwrap();
+    let active = tokio::spawn(std::future::pending::<()>());
+    let retained = tokio::spawn(std::future::pending::<()>());
+    let mut handles = HashMap::from([
+        (camera_id, active.abort_handle()),
+        (other_id, retained.abort_handle()),
+    ]);
+    let mut queues = HashMap::from([
+        (camera_id, vec![queued.clone()]),
+        (other_id, vec![other.clone()]),
+    ]);
+    let mut inflight = HashMap::from([
+        (pending.id, camera_id),
+        (queued.id, camera_id),
+        (other.id, other_id),
+    ]);
+    let results =
+        cancel_instance_commands(camera_id, &mut handles, &mut queues, &mut inflight, &ledger)
+            .await
+            .unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.contains(&CommandResult::unknown(pending.id)));
+    assert!(results.contains(&CommandResult::failed(
+        queued.id,
+        CommandErrorCode::DeviceUnavailable
+    )));
+    assert!(active.await.unwrap_err().is_cancelled());
+    assert!(!retained.is_finished());
+    assert_eq!(inflight, HashMap::from([(other.id, other_id)]));
+    assert!(queues.contains_key(&other_id));
+    assert!(!queues.contains_key(&camera_id));
+    let ledger = ledger.lock().await;
+    assert_eq!(
+        ledger.replay(&pending).unwrap(),
+        Some(CommandResult::unknown(pending.id))
+    );
+    assert_eq!(ledger.replay(&other).unwrap(), None);
+    retained.abort();
+    assert!(retained.await.unwrap_err().is_cancelled());
+}
+
+#[test]
+fn rejected_authorization_binding_ignores_display_and_equivalent_origin_changes() {
+    let mut instance = CameraInstance {
+        server: "https://example.com".into(),
+        instance_id: Uuid::new_v4(),
+        access_token: "a".repeat(43),
+        name: "before".into(),
+        camera: None,
+    };
+    let original = authorization_fingerprint(&instance);
+    instance.name = "after".into();
+    instance.server = "https://EXAMPLE.COM:443/".into();
+    assert_eq!(authorization_fingerprint(&instance), original);
+    instance.access_token = "b".repeat(43);
+    assert_ne!(authorization_fingerprint(&instance), original);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reconfiguration_cancels_old_ptz_before_waiting_for_media_finalization() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = requests.clone();
+    let simulator = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 8192];
+        assert!(socket.read(&mut request).await.unwrap() > 0);
+        counted.fetch_add(1, Ordering::SeqCst);
+        let body = r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><t:StopResponse xmlns:t="http://www.onvif.org/ver20/ptz/wsdl"/></s:Body></s:Envelope>"#;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+    let camera_id = Uuid::new_v4();
+    let command = DeviceCommand {
+        id: Uuid::new_v4(),
+        camera_id,
+        kind: "ptz".into(),
+        payload: serde_json::json!({"action":"stop"}),
+        expires_at: (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc3339(),
+    };
+    let (_ledger_root, ledger) = test_command_ledger(std::slice::from_ref(&command));
+    let control = onvif::ControlTarget::new(
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+        Url::parse(&format!("http://{address}/ptz")).unwrap(),
+        "fixture".into(),
+    )
+    .unwrap();
+    let mut capabilities = DeviceCapabilities::unknown();
+    capabilities.ptz = CapabilityStatus::Supported;
+    let mut old_camera = new_runtime_camera();
+    old_camera.resolved = Some(ResolvedDevice {
+        adapter_kind: "onvif",
+        identity: DeviceIdentity::default(),
+        capabilities,
+        streams: Vec::new(),
+        control: device::ControlTarget::Onvif(control),
+    });
+    let old_runtime = HashMap::from([(camera_id, old_camera)]);
+    let mut media = Command::new("sh")
+        .args(["-c", "read -r command; printf 'stopping\\n'; sleep 0.3"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut stopping_signal = tokio::io::BufReader::new(media.stdout.take().unwrap());
+    let (media_stopping, wait_for_media) = tokio::sync::oneshot::channel();
+    let observe_stop = tokio::spawn(async move {
+        let mut line = String::new();
+        stopping_signal.read_line(&mut line).await.unwrap();
+        let _ = media_stopping.send(());
+    });
+    let task_ledger = ledger.clone();
+    let task_command = command.clone();
+    let task = tokio::spawn(async move {
+        wait_for_media.await.unwrap();
+        execute_commands(
+            &old_runtime,
+            vec![task_command],
+            &mut HashMap::new(),
+            &task_ledger,
+        )
+        .await
+    });
+    let mut handles = HashMap::from([(camera_id, task.abort_handle())]);
+    let mut queues = HashMap::new();
+    let mut inflight = HashMap::from([(command.id, camera_id)]);
+    let mut state = state_with(vec![camera(camera_id, "before")]);
+    let mut next: LocalState =
+        serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+    next.instances[0].camera.as_mut().unwrap().name = "after".into();
+    let directory = tempdir();
+    let path = directory.path().join("config.json");
+    save_state(&path, &next).unwrap();
+    let mut runtime = HashMap::from([(camera_id, new_runtime_camera())]);
+    let mut children = HashMap::from([(format!("{camera_id}:main:record"), media)]);
+    let mut stopping = MediaTasks::new();
+    let changed = reload_configuration(&path, &mut state, &mut runtime).unwrap();
+    for id in &changed {
+        cancel_instance_commands(*id, &mut handles, &mut queues, &mut inflight, &ledger)
+            .await
+            .unwrap();
+    }
+    stop_reconfigured_media(&changed, &mut children, &mut stopping).await;
+    let outcome = task.await;
+    observe_stop.await.unwrap();
+    simulator.abort();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        0,
+        "old PTZ executed while reconfiguration waited for media finalization"
+    );
+    assert!(outcome.unwrap_err().is_cancelled());
 }

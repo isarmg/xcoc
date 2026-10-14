@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -118,9 +118,12 @@ fn http_client() -> anyhow::Result<reqwest::Client> {
         .build()?)
 }
 async fn response_json<T: for<'de> Deserialize<'de>>(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     limit: usize,
 ) -> anyhow::Result<T> {
+    let mut response = response
+        .error_for_status()
+        .context("Server rejected mobile request")?;
     ensure!(
         response.status().is_success(),
         "Server rejected mobile request"
@@ -241,6 +244,9 @@ pub struct MobileClient {
     pub pairing: Pairing,
     client: reqwest::Client,
     publisher: Mutex<Option<PublisherWorker>>,
+    poll_revision: AtomicU64,
+    closed: AtomicBool,
+    authorization_rejected: AtomicBool,
 }
 impl MobileClient {
     pub fn open(pairing: Pairing) -> anyhow::Result<Self> {
@@ -249,6 +255,9 @@ impl MobileClient {
             pairing,
             client: http_client()?,
             publisher: Mutex::new(None),
+            poll_revision: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+            authorization_rejected: AtomicBool::new(false),
         })
     }
     /// Send current evidence and reconcile a scoped grant without exposing the URL to native UI.
@@ -260,6 +269,7 @@ impl MobileClient {
     ) -> anyhow::Result<Value> {
         let origin = server_origin(&self.pairing.server)?;
         let request = snapshot_document(&self.pairing, metadata)?;
+        let revision = self.begin_poll()?;
         let response = self
             .client
             .put(origin.join(&format!("{API_PREFIX}/client/snapshot"))?)
@@ -267,7 +277,7 @@ impl MobileClient {
             .json(&request)
             .send()
             .await?;
-        let response: SnapshotResponse = response_json(response, 65536).await?;
+        let response = self.receive_snapshot(revision, response).await?;
         ensure!(
             response.protocol == PROTOCOL
                 && chrono::DateTime::parse_from_rfc3339(&response.accepted_at).is_ok()
@@ -283,10 +293,73 @@ impl MobileClient {
             );
             rtsp_publish::validate_publish_url(&grant.publish_url)?;
         }
+        self.reconcile_snapshot(revision, response, metadata, sps, pps)
+    }
+
+    fn begin_poll(&self) -> anyhow::Result<u64> {
+        let _publisher = self
+            .publisher
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mobile publisher unavailable"))?;
+        ensure!(
+            !self.authorization_rejected.load(Ordering::Acquire),
+            "mobile pairing was rejected; pair again before reconnecting"
+        );
+        ensure!(
+            !self.closed.load(Ordering::Acquire),
+            "mobile client is closed"
+        );
+        Ok(self
+            .poll_revision
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1))
+    }
+
+    async fn receive_snapshot(
+        &self,
+        revision: u64,
+        response: reqwest::Response,
+    ) -> anyhow::Result<SnapshotResponse> {
+        let result = response_json(response, 65536).await;
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(crate::snapshot_authorization_rejected)
+        {
+            let mut publisher = self
+                .publisher
+                .lock()
+                .map_err(|_| anyhow::anyhow!("mobile publisher unavailable"))?;
+            // A rejected old request cannot invalidate a newer stop/poll intent.
+            if self.poll_revision.load(Ordering::Acquire) == revision {
+                self.authorization_rejected.store(true, Ordering::Release);
+                self.poll_revision.fetch_add(1, Ordering::AcqRel);
+                publisher.take();
+            }
+        }
+        result
+    }
+
+    fn reconcile_snapshot(
+        &self,
+        revision: u64,
+        response: SnapshotResponse,
+        metadata: &CaptureMetadata,
+        sps: &[u8],
+        pps: &[u8],
+    ) -> anyhow::Result<Value> {
+        let grant = response.publish.first();
         let mut publisher = self
             .publisher
             .lock()
             .map_err(|_| anyhow::anyhow!("mobile publisher unavailable"))?;
+        // stop/close and newer polls invalidate in-flight responses. Check while
+        // holding the same lock as stop so an old grant cannot revive publishing.
+        ensure!(
+            !self.closed.load(Ordering::Acquire)
+                && self.poll_revision.load(Ordering::Acquire) == revision,
+            "mobile snapshot was superseded"
+        );
         match grant.filter(|_| metadata.active) {
             None => {
                 publisher.take();
@@ -335,6 +408,15 @@ impl MobileClient {
     }
     pub fn stop(&self) {
         if let Ok(mut publisher) = self.publisher.lock() {
+            self.poll_revision.fetch_add(1, Ordering::AcqRel);
+            publisher.take();
+        }
+    }
+    /// Permanently invalidate this session, including FFI calls already holding an Arc.
+    pub fn close(&self) {
+        if let Ok(mut publisher) = self.publisher.lock() {
+            self.closed.store(true, Ordering::Release);
+            self.poll_revision.fetch_add(1, Ordering::AcqRel);
             publisher.take();
         }
     }
@@ -397,6 +479,175 @@ impl PublisherWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn stopped_mobile_client_ignores_inflight_snapshot_completion() {
+        let client = MobileClient::open(Pairing {
+            server: "https://localhost".into(),
+            installation_id: Uuid::new_v4(),
+            instance_id: Uuid::new_v4(),
+            access_token: "a".repeat(43),
+            name: "phone".into(),
+        })
+        .unwrap();
+        let metadata = CaptureMetadata {
+            platform: MobilePlatform::Ios,
+            model: "synthetic".into(),
+            width: 1280,
+            height: 720,
+            frame_rate: 30,
+            active: true,
+        };
+        // The response belongs to a poll that began before stop/close.
+        let response = SnapshotResponse {
+            protocol: PROTOCOL.into(),
+            accepted_at: chrono::Utc::now().to_rfc3339(),
+            commands: Vec::new(),
+            publish: vec![PublishGrant {
+                camera_id: client.pairing.instance_id,
+                profile: "main".into(),
+                publish_url: "rtsps://127.0.0.1:9/camera?jwt=synthetic".into(),
+            }],
+        };
+        let revision = client.begin_poll().unwrap();
+        client.stop();
+        assert!(
+            client
+                .reconcile_snapshot(revision, response, &metadata, &[0x67, 1, 2, 3], &[0x68])
+                .is_err()
+        );
+        assert!(
+            client.publisher.lock().unwrap().is_none(),
+            "late response recreated a stopped publisher"
+        );
+    }
+
+    #[tokio::test]
+    async fn older_mobile_snapshot_cannot_remove_newer_publisher() {
+        let client = MobileClient::open(Pairing {
+            server: "https://localhost".into(),
+            installation_id: Uuid::new_v4(),
+            instance_id: Uuid::new_v4(),
+            access_token: "a".repeat(43),
+            name: "phone".into(),
+        })
+        .unwrap();
+        let metadata = CaptureMetadata {
+            platform: MobilePlatform::Ios,
+            model: "synthetic".into(),
+            width: 1280,
+            height: 720,
+            frame_rate: 30,
+            active: true,
+        };
+        let older_revision = client.begin_poll().unwrap();
+        let newer_revision = client.begin_poll().unwrap();
+        let (frames, _receiver) = mpsc::channel(4);
+        let task = tokio::spawn(std::future::pending::<()>());
+        *client.publisher.lock().unwrap() = Some(PublisherWorker {
+            frames,
+            task: task.abort_handle(),
+            connected: Arc::new(AtomicBool::new(true)),
+            needs_keyframe: Arc::new(AtomicBool::new(true)),
+        });
+        let empty_response = || SnapshotResponse {
+            protocol: PROTOCOL.into(),
+            accepted_at: chrono::Utc::now().to_rfc3339(),
+            commands: Vec::new(),
+            publish: Vec::new(),
+        };
+        assert!(
+            client
+                .reconcile_snapshot(older_revision, empty_response(), &metadata, &[], &[])
+                .is_err()
+        );
+        assert!(client.publisher.lock().unwrap().is_some());
+        assert!(!task.is_finished());
+        // The newest intent still has authority to stop its own publisher.
+        client
+            .reconcile_snapshot(newer_revision, empty_response(), &metadata, &[], &[])
+            .unwrap();
+        assert!(client.publisher.lock().unwrap().is_none());
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    async fn http_response(status: u16) -> reqwest::Response {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 8192];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        server.await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn mobile_authorization_rejection_stops_retry_but_transient_errors_do_not() {
+        for status in [401, 403, 503] {
+            let client = MobileClient::open(Pairing {
+                server: "https://localhost".into(),
+                installation_id: Uuid::new_v4(),
+                instance_id: Uuid::new_v4(),
+                access_token: "a".repeat(43),
+                name: "phone".into(),
+            })
+            .unwrap();
+            let revision = client.begin_poll().unwrap();
+            let (frames, _receiver) = mpsc::channel(4);
+            let task = tokio::spawn(std::future::pending::<()>());
+            *client.publisher.lock().unwrap() = Some(PublisherWorker {
+                frames,
+                task: task.abort_handle(),
+                connected: Arc::new(AtomicBool::new(true)),
+                needs_keyframe: Arc::new(AtomicBool::new(true)),
+            });
+            assert!(
+                client
+                    .receive_snapshot(revision, http_response(status).await)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(client.begin_poll().is_err(), status == 401);
+            assert_eq!(client.publisher.lock().unwrap().is_none(), status == 401);
+            client.close();
+            assert!(task.await.unwrap_err().is_cancelled());
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_mobile_401_cannot_invalidate_newer_intent() {
+        let client = MobileClient::open(Pairing {
+            server: "https://localhost".into(),
+            installation_id: Uuid::new_v4(),
+            instance_id: Uuid::new_v4(),
+            access_token: "a".repeat(43),
+            name: "phone".into(),
+        })
+        .unwrap();
+        let old_revision = client.begin_poll().unwrap();
+        client.stop();
+        let new_revision = client.begin_poll().unwrap();
+        assert!(
+            client
+                .receive_snapshot(old_revision, http_response(401).await)
+                .await
+                .is_err()
+        );
+        assert_eq!(client.poll_revision.load(Ordering::Acquire), new_revision);
+        assert!(client.begin_poll().is_ok());
+    }
+
     #[test]
     fn mobile_snapshot_matches_edge_v1_and_never_contains_credentials() {
         let pairing = Pairing {
