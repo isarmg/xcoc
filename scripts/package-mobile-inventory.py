@@ -82,7 +82,7 @@ def package(artifacts,output,platform,gradle_export=None):
         with tempfile.TemporaryDirectory(prefix=product+'-android-runtime-') as temporary:
             tools=module.checkout_tools(Path(temporary).resolve(strict=True)/'tools',environment)
             producer=module.load_tool('gradle_sbom',tools)
-            bom=producer.produce(json.loads(Path(gradle_export).read_text()),output,product,version,revision)
+            bom=producer.produce(json.loads(Path(gradle_export).read_text(encoding='utf-8')),output,product,version,revision)
         graphs.append({'bom':str(bom),'files':managed})
     module.generate(output,product=product,version=version,revision=revision,target=target,
         root_name=root_name,runtime_files=native,manifest_relative='crates/mobile-ffi/Cargo.toml',
