@@ -225,6 +225,9 @@ jobs:
       - name: Test Windows private ACLs
         if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         run: cargo test --locked --release --bin xcoc windows_
+      - name: Install exact WiX extraction tool
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
+        run: dotnet tool install --global wix --version 4.0.6
       - name: Build Windows MSI
         if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         shell: pwsh

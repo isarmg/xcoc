@@ -147,13 +147,15 @@ MSI 和 ZIP 使用同一个静态媒体库构建的单文件客户端，发布�
 
 ### 从本机二进制生成 MSI
 
-另准备 .NET SDK。安装器工程会解析固定的 WiX `4.0.6` 依赖；本机首次构建需要能够取得这些构建依赖。在同一仓库根目录、同一 PowerShell 会话运行：
+另准备 .NET SDK 和固定版本的 WiX CLI。安装器工程与提取器都使用 WiX `4.0.6`；本机首次构建需要能够取得这些依赖。在同一仓库根目录、同一 PowerShell 会话运行：
 
 ```powershell
+dotnet tool install --global wix --version 4.0.6
 # 本机构建设置临时工作根；脚本只清理其中自己创建的唯一子目录。
 $env:RUNNER_TEMP = $env:TEMP
 .\packaging\windows\build-installer.ps1 `
   -ClientExe "$PWD\target\release\xcoc.exe" `
+  -NativeWork "$PWD\target\native-media" `
   -Version "1.0.0" `
   -Output "$PWD\dist"
 ```
