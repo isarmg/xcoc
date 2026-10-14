@@ -50,9 +50,14 @@ class InstalledAppTest : InstrumentationTestCase() {
                 }
                 assertTrue("Unexpected system permission prompt; refusing to interact",
                     messages.any { it.text?.toString()?.contains("notification", ignoreCase = true) == true })
-                val buttons = permissionPackages
-                    .flatMap { root.findAccessibilityNodeInfosByViewId("$it:id/permission_deny_button") }
+                // Android uses a distinct deny resource after a previous denial.
+                // Both exact IDs are defined by PermissionController and its CTS.
+                val denyIds = listOf("permission_deny_button", "permission_deny_and_dont_ask_again_button")
+                val buttons = permissionPackages.flatMap { pkg ->
+                    denyIds.flatMap { id -> root.findAccessibilityNodeInfosByViewId("$pkg:id/$id") }
+                }.filter { it.isVisibleToUser && it.isEnabled }
                 if (buttons.isNotEmpty()) {
+                    android.util.Log.i("XcocInstalledTest", "Denying notification via ${buttons.first().viewIdResourceName}")
                     assertTrue("Notification denial click failed", buttons.first().performAction(
                         android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
                     denied = true
