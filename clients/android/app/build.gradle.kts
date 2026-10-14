@@ -5,13 +5,20 @@ plugins {
 android {
     namespace = "org.sarmg.xcoc"
     compileSdk = 36
+    if (providers.gradleProperty("xcocEmulatorTests").orNull == "true") {
+        useLibrary("android.test.runner")
+        useLibrary("android.test.base")
+        sourceSets["androidTest"].java.srcDir("src/emulatorTest/java")
+    }
     defaultConfig {
         applicationId = "org.sarmg.xcoc"
         minSdk = 26
         targetSdk = 36
         versionCode = 1_000_000
         versionName = "1.0.0"
-        ndk { abiFilters += "arm64-v8a" }
+        // Emulator candidates never change the shipping arm64 default.
+        ndk { abiFilters += if (providers.gradleProperty("xcocEmulatorTests").orNull == "true") "x86_64" else "arm64-v8a" }
+        testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

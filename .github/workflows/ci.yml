@@ -162,6 +162,52 @@ jobs:
       - name: Build and retain Android Release artifacts
         uses: ./.github/actions/package-android-release
 
+  android-installed-smoke:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.run_full != 'false' }}
+    name: Android installed x86_64 candidate
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.99.0 --profile minimal --target x86_64-linux-android
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          lane: ${{ github.job }}
+      - run: python scripts/check-xcsc-source.py
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Prepare disposable Android SDK
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "emulator" "system-images;android-36;google_apis;x86_64"
+      - run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build same-source emulator candidate once
+        run: |
+          XCOC_ANDROID_ABI=x86_64 ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" bash scripts/build-android-rust.sh
+          gradle -p clients/android -PxcocEmulatorTests=true assembleDebug assembleDebugAndroidTest
+      - name: Install and use APK in disposable emulator
+        timeout-minutes: 12
+        run: bash scripts/test-android-install.sh
+      - name: Retain emulator installation diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xcoc-android-installed-smoke
+          path: ${{ runner.temp }}/xcoc-android-install
+          if-no-files-found: ignore
+
   ios-validation:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.run_full != 'false' }}

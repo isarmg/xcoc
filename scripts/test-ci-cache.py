@@ -26,6 +26,31 @@ class CacheContractTests(unittest.TestCase):
             self.assertIn(field, action)
         self.assertNotIn('restore-keys:', action)
 
+    def test_android_install_candidate_is_isolated_from_shipping_artifacts(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        job = workflow.split('  android-installed-smoke:\n', 1)[1].split('  ios-validation:', 1)[0]
+        self.assertIn('needs: scope', job)
+        self.assertNotIn('needs: android', job)
+        self.assertIn('XCOC_ANDROID_ABI=x86_64', job)
+        self.assertIn('-PxcocEmulatorTests=true', job)
+        self.assertNotIn('package-android-release', job)
+        self.assertNotIn('native-media', job)
+        self.assertNotIn('sudo ', job)
+        self.assertIn('upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a', job)
+        script = (ROOT / 'scripts/test-android-install.sh').read_text()
+        self.assertIn('RUNNER_ENVIRONMENT:-', script)
+        self.assertIn('github-hosted', script)
+        self.assertIn('mktemp -d', script)
+        self.assertIn('"$sdk/platform-tools/adb" -s "$serial"', script)
+        self.assertIn('OK \\(3 tests\\)', script)
+        self.assertIn('am force-stop', script)
+        self.assertIn('adb uninstall org.sarmg.xcoc', script)
+        self.assertNotIn('gradle ', script)
+        helper = (ROOT / 'scripts/build-android-rust.sh').read_text()
+        self.assertIn('XCOC_ANDROID_ABI:-arm64-v8a', helper)
+        build = (ROOT / 'clients/android/app/build.gradle.kts').read_text()
+        self.assertIn('src/emulatorTest/java', build)
+
     def test_aggregate_gate_rejects_failed_missing_and_cancelled_validation(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
         gate = workflow.split('      - name: Require every iOS configuration\n', 1)[1].split('\n  native-build:', 1)[0]
