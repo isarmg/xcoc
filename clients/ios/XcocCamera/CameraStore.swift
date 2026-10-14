@@ -7,12 +7,19 @@ final class CameraStore: ObservableObject {
     @Published var status = "先在 Server 创建实例并填写授权码"
     @Published var paired = false
     @Published var pairing = false
+    @Published var starting = false
     @Published var running = false
     @Published var stopping = false
+    @Published var cleanupPending = false
     private let pairOperation: (String, String, String) throws -> Void
+    private let requestCameraAccess: (@escaping (Bool) -> Void) -> Void
+    private let applicationIsActive: () -> Bool
+    private let readPairing: () throws -> Data?
+    private let nativeCall: (UInt64, [String: Any]) throws -> [String: Any]
+    private let nativeFrame: (UInt64, Data, UInt64) -> Bool
     private let control = DispatchQueue(label: "xcoc.control")
     private let lock = NSLock()
-    private let encoder = CameraEncoder()
+    private let encoder: CameraEncoding
     private let lifecycle = CaptureGeneration()
     private var handle: UInt64 = 0
     private var sps = Data()
@@ -20,27 +27,44 @@ final class CameraStore: ObservableObject {
     private var width = 1280
     private var height = 720
     private var timer: DispatchSourceTimer?
+    private var stopFailure: String?
 
-    init(pairOperation: ((String, String, String) throws -> Void)? = nil) {
+    init(pairOperation: ((String, String, String) throws -> Void)? = nil,
+         requestCameraAccess: @escaping (@escaping (Bool) -> Void) -> Void = { AVCaptureDevice.requestAccess(for: .video, completionHandler: $0) },
+         applicationIsActive: @escaping () -> Bool = { UIApplication.shared.applicationState == .active },
+         readPairing: @escaping () throws -> Data? = { try KeychainPairing.read("pairing") },
+         nativeCall: @escaping (UInt64, [String: Any]) throws -> [String: Any] = RustBridge.call,
+         nativeFrame: @escaping (UInt64, Data, UInt64) -> Bool = { RustBridge.frame($0, $1, timestamp: $2) },
+         encoder: CameraEncoding? = nil) {
         self.pairOperation = pairOperation ?? CameraStore.savePairing
-        paired = (try? KeychainPairing.read("pairing")) != nil
+        self.requestCameraAccess = requestCameraAccess
+        self.applicationIsActive = applicationIsActive
+        self.readPairing = readPairing
+        self.nativeCall = nativeCall
+        self.nativeFrame = nativeFrame
+        self.encoder = encoder ?? CameraEncoder()
+        paired = (try? readPairing()) != nil
         if paired { status = "已配对，可启动摄像头" }
-        encoder.onFrame = { [weak self] data, timestamp, sps, pps, width, height in
+        self.encoder.onFrame = { [weak self] generation, data, timestamp, sps, pps, width, height in
             guard let self else { return false }
             self.lock.lock()
+            guard self.lifecycle.isCurrent(generation) else { self.lock.unlock(); return false }
             self.sps = sps; self.pps = pps; self.width = width; self.height = height
             let handle = self.handle
             self.lock.unlock()
-            return handle != 0 && RustBridge.frame(handle, data, timestamp: timestamp)
+            return handle != 0 && self.nativeFrame(handle, data, timestamp)
         }
-        encoder.onFailure = { [weak self] in DispatchQueue.main.async { self?.stop(); self?.status = "摄像头不可用，请核对权限" } }
+        self.encoder.onFailure = { [weak self] generation in DispatchQueue.main.async {
+            guard let self, self.lifecycle.isCurrent(generation) else { return }
+            self.stop(failure: "摄像头不可用，请核对权限")
+        } }
     }
     private static func savePairing(server: String, code: String, name: String) throws {
         let result = try RustBridge.call(0, ["operation": "pair", "server": server.trimmingCharacters(in: .whitespacesAndNewlines), "authorization_code": code.trimmingCharacters(in: .whitespacesAndNewlines), "name": name.trimmingCharacters(in: .whitespacesAndNewlines), "installation_id": try KeychainPairing.installationId()])
         try KeychainPairing.save("pairing", data: JSONSerialization.data(withJSONObject: result))
     }
     func pair(server: String, code: String, name: String) {
-        guard !running, !stopping, !pairing else { return }
+        guard !starting, !running, !stopping, !cleanupPending, !pairing else { return }
         pairing = true
         status = "正在配对"
         control.async {
@@ -51,21 +75,32 @@ final class CameraStore: ObservableObject {
         }
     }
     func start(front: Bool) {
-        guard !running, !stopping, !pairing, paired else { return }
-        AVCaptureDevice.requestAccess(for: .video) { allowed in
+        guard !starting, !running, !stopping, !cleanupPending, !pairing, paired else { return }
+        let generation = lifecycle.begin()
+        stopFailure = nil
+        starting = true; status = "正在等待摄像头权限"
+        requestCameraAccess { allowed in
             DispatchQueue.main.async {
-                guard !self.running, !self.stopping, !self.pairing, UIApplication.shared.applicationState == .active else { return }
-                guard allowed else { self.status = "请在系统设置中允许摄像头权限"; return }
+                guard self.lifecycle.isCurrent(generation), self.starting, !self.running, !self.stopping, !self.pairing else { return }
+                self.starting = false
+                guard self.applicationIsActive() else {
+                    self.lifecycle.cancel(); self.status = "摄像头已停止"; return
+                }
+                guard allowed else {
+                    self.lifecycle.cancel(); self.status = "请在系统设置中允许摄像头权限"; return
+                }
                 self.running = true; self.status = "正在启动摄像头"
-                let generation = self.lifecycle.begin()
                 self.control.async {
                     do {
                         guard self.lifecycle.isCurrent(generation) else { return }
-                        guard let data = try KeychainPairing.read("pairing"), let pairing = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw RustBridge.NativeError.failed }
-                        let result = try RustBridge.call(0, ["operation": "open", "pairing": pairing])
+                        guard let data = try self.readPairing(), let pairing = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw RustBridge.NativeError.failed }
+                        let result = try self.nativeCall(0, ["operation": "open", "pairing": pairing])
                         guard let value = result["value"] as? NSNumber, value.uint64Value != 0 else { throw RustBridge.NativeError.failed }
                         guard self.lifecycle.isCurrent(generation) else {
-                            _ = try? RustBridge.call(value.uint64Value, ["operation": "close"])
+                            do { _ = try self.nativeCall(value.uint64Value, ["operation": "close"]) }
+                            catch {
+                                self.lock.lock(); self.handle = value.uint64Value; self.lock.unlock()
+                            }
                             return
                         }
                         self.lock.lock(); self.handle = value.uint64Value; self.sps = Data(); self.pps = Data(); self.lock.unlock()
@@ -92,14 +127,24 @@ final class CameraStore: ObservableObject {
         guard current != 0 else { return }
         do {
             let metadata: [String: Any] = ["platform": "ios", "model": UIDevice.current.model, "width": width, "height": height, "frame_rate": 30, "active": active && !sps.isEmpty && !pps.isEmpty]
-            let result = try RustBridge.call(current, ["operation": "poll", "metadata": metadata, "sps": sps.base64EncodedString(), "pps": pps.base64EncodedString()])
-            if active { DispatchQueue.main.async { if self.running { self.status = result["publishing"] as? Bool == true ? "正在向 Server 发布视频" : "正在连接 Server" } } }
-        } catch { if active { DispatchQueue.main.async { if self.running { self.status = "连接中断，正在重试" } } } }
+            let result = try nativeCall(current, ["operation": "poll", "metadata": metadata, "sps": sps.base64EncodedString(), "pps": pps.base64EncodedString()])
+            if active, let generation { DispatchQueue.main.async {
+                if self.running, self.lifecycle.isCurrent(generation) { self.status = result["publishing"] as? Bool == true ? "正在向 Server 发布视频" : "正在连接 Server" }
+            } }
+        } catch { if active, let generation { DispatchQueue.main.async {
+            if self.running, self.lifecycle.isCurrent(generation) { self.status = "连接中断，正在重试" }
+        } } }
     }
-    func stop() {
-        guard running else { return }
+    func stop(failure: String? = nil) {
+        guard !stopping, starting || running || cleanupPending else { return }
+        if let failure { stopFailure = failure }
+        if starting {
+            starting = false; lifecycle.cancel(); status = "摄像头已停止"
+            return
+        }
         // The encoder stops before the handle is destroyed; no camera frames survive stop.
-        running = false; stopping = true; status = "正在停止摄像头"
+        running = false; stopping = true; cleanupPending = false; status = "正在停止摄像头"
+        let failureReason = stopFailure
         lifecycle.cancel()
         control.async { self.timer?.cancel(); self.timer = nil }
         // Capture stops independently of an in-flight network poll. A late
@@ -108,13 +153,19 @@ final class CameraStore: ObservableObject {
             guard let self else { return }
             self.control.async {
                 self.lock.lock(); let current = self.handle; self.lock.unlock()
+                let closed: Bool
                 if current != 0 {
-                    _ = try? RustBridge.call(current, ["operation": "stop"])
+                    _ = try? self.nativeCall(current, ["operation": "stop"])
                     self.poll(active: false)
-                    _ = try? RustBridge.call(current, ["operation": "close"])
+                    do { _ = try self.nativeCall(current, ["operation": "close"]); closed = true }
+                    catch { closed = false }
+                } else { closed = true }
+                if closed { self.lock.lock(); self.handle = 0; self.lock.unlock() }
+                DispatchQueue.main.async {
+                    self.stopping = false; self.cleanupPending = !closed
+                    self.status = closed ? (failureReason.map { $0 + "；摄像头和连接已停止" } ?? "摄像头已停止") :
+                        (failureReason.map { $0 + "；" } ?? "") + "摄像头已停止采集，但连接关闭未确认；请重试停止"
                 }
-                self.lock.lock(); self.handle = 0; self.lock.unlock()
-                DispatchQueue.main.async { self.stopping = false; self.status = "摄像头已停止" }
             }
         }
     }

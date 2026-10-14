@@ -5,6 +5,7 @@ set -euo pipefail
 prefix="${1:?Usage: build-unix.sh ABSOLUTE_INSTALL_PREFIX [BUILD_DIRECTORY]}"
 case "$prefix" in /*) ;; *) echo 'The install prefix must be absolute.' >&2; exit 1 ;; esac
 work="${2:-${prefix}-build}"
+project_dir="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)"
 version=9.0.2
 sha256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 mkdir -p "$work" "$prefix"
@@ -53,30 +54,7 @@ if [[ "$(uname -s)" == Linux ]]; then
   # with statik(true). Stage non-OS archives beside FFmpeg so release builds
   # really are self-contained. Resolve the full configured link closure rather
   # than assuming every distro's OpenSSL has the same compression dependencies.
-  python3 - "$prefix" <<'PYTHON'
-import pathlib, re, shutil, subprocess, sys
-prefix = pathlib.Path(sys.argv[1])
-libs = set()
-for pc in (prefix / 'lib/pkgconfig').glob('*.pc'):
-    libs.update(re.findall(r'(?:^|\s)-l([\w.+-]+)', pc.read_text()))
-for name in sorted(libs - {'c', 'm', 'dl', 'pthread', 'rt', 'gcc', 'gcc_s', 'avformat', 'avcodec', 'avutil'}):
-    filename = f'lib{name}.a'
-    target = prefix / 'lib' / filename
-    found = subprocess.check_output(['cc', '-print-file-name=' + filename], text=True).strip()
-    archive = pathlib.Path(found).resolve()
-    if found == filename or not archive.is_file():
-        raise SystemExit('Missing static dependency: ' + filename)
-    shutil.copy2(archive, target)
-    # Preserve the distribution's applicable notices for each staged archive.
-    packages = {'ssl': 'libssl-dev', 'crypto': 'libssl-dev', 'z': 'zlib1g-dev', 'zstd': 'libzstd-dev', 'atomic': 'libatomic1'}
-    package = packages.get(name)
-    if package is None:
-        raise SystemExit('Review the license notice for new dependency: ' + name)
-    copyright = pathlib.Path('/usr/share/doc') / package / 'copyright'
-    if not copyright.is_file():
-        raise SystemExit('Missing dependency notice: ' + str(copyright))
-    shutil.copy2(copyright, prefix / 'share/xcoc-native' / f'{package}-copyright.txt')
-PYTHON
+  python3 "$project_dir/packaging/native/static-closure.py" "$prefix"
 fi
 cp COPYING.LGPLv2.1 COPYING.LGPLv3 COPYING.GPLv3 LICENSE.md "$prefix/share/xcoc-native/"
 printf '%s\n' "$sha256  ffmpeg-$version.tar.xz" > "$prefix/share/xcoc-native/SHA256SUMS"

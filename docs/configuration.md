@@ -2,7 +2,7 @@
 
 首次部署或日常维护请先阅读[分平台全流程指南](platform-setup.md)：按本机平台完成安装、配对、重新配对、服务/后台任务查看与启停、诊断和卸载，命令旁均说明用途。本文详细说明配置字段和业务操作。
 
-本文适用于 `xcoc` `1.1.0`，按实际 CLI 说明实例配对、RTSP/ONVIF 摄像头配置、更新和验证。
+本文适用于 `xcoc` 源码候选 `1.1.3`，按实际 CLI 说明实例配对、RTSP/ONVIF 摄像头配置、更新和验证。
 
 品牌码流预设、Windows/macOS/Linux 内置与 USB 摄像头见[摄像头兼容与协议转换](camera-support.md)；
 Android/iOS 采集应用见[移动端指南](mobile.md)。这些输入统一转换成服务端已支持的 RTSP/RTSPS，
@@ -30,7 +30,7 @@ Android/iOS 采集应用见[移动端指南](mobile.md)。这些输入统一转�
 | `service [--no-boot-start]`（Windows） | 用已保存配置设置并启动系统服务；该选项只把开机策略改为手动 |
 | `logs --tail 100`（Windows） | 只读查询后台持久日志；Linux/macOS 使用对应系统日志入口 |
 
-`--config` 选择配置文件。`UUID` 使用真实实例 ID；`--input-stdin` 是标准输入通道，不是把 JSON 放进命令参数。`sudo install -m 0600` 创建仅管理员可读写的输入文件，`sudoedit` 编辑它，`sudo sh -c 'exec ... < 文件'` 让提权后的进程打开受保护文件并读 stdin。`shred -u` 覆写并删除临时文件，在 SSD/快照文件系统上不保证介质安全擦除。常驻进程每两秒重读配置，修改后的摄像头需要核对服务端新快照。
+`--config` 选择配置文件。所有公开业务命令支持 `--format human|json|ndjson`，默认 `human`；机器模式在标准输出返回一个带 `schema_version`、`product`、`command`、`ok` 的结果对象，失败时同时返回非零退出状态。日志和交互提示写入标准错误。`setup --input-stdin` 和 `camera apply --input-stdin` 的输入文档限 64 KiB，`--timeout-seconds` 设置读取截止时间（默认 300 秒，范围 1–3600 秒）；配置文件本身仍使用独立的 1 MiB 上限。`UUID` 使用真实实例 ID；`--input-stdin` 是标准输入通道，不是把 JSON 放进命令参数。`sudo install -m 0600` 创建仅管理员可读写的输入文件，`sudoedit` 编辑它，`sudo sh -c 'exec ... < 文件'` 让提权后的进程打开受保护文件并读 stdin。`shred -u` 覆写并删除临时文件，在 SSD/快照文件系统上不保证介质安全擦除。常驻进程每两秒重读配置，修改后的摄像头需要核对服务端新快照。
 
 
 ## 1. 前置条件
@@ -89,9 +89,9 @@ sudo shred -u /root/xcoc-bootstrap.json
 sudo xcoc setup --interactive
 ```
 
-首次配对和 `setup --interactive --replace` 使用同一个 `Authorization code (visible)` 普通文本提示。输入或
-粘贴的授权码会在终端中明文回显，不提供遮罩、隐藏切换或特殊显示流程；随后配置摄像头时，摄像头密码仍
-使用隐藏输入。媒体工作进程只通过有界匿名 stdin 管道接收摄像头 RTSP 凭据、发布 URL/JWT 和私有回环地址；这些数据不进入进程参数、环境变量或临时凭据文件。客户端只报告安全的媒体错误，不输出底层库的原始日志。管理员或拥有服务进程调试/内存读取权限的账户仍可能读取运行中的秘密，必须限制本机账户、调试和配置访问权限。
+首次配对和 `setup --interactive --replace` 的 `Authorization code` 提示使用隐藏输入；授权码不回显。配置摄像头时，摄像头密码同样使用隐藏输入。
+
+媒体工作进程只通过有界匿名 stdin 管道接收摄像头 RTSP 凭据、发布 URL/JWT 和私有回环地址；这些数据不进入进程参数、环境变量或临时凭据文件。客户端只报告安全的媒体错误，不输出底层库的原始日志。管理员或拥有服务进程调试/内存读取权限的账户仍可能读取运行中的秘密，必须限制本机账户、调试和配置访问权限。
 
 保存输出中的实例 UUID。一次安装可以保存多个实例，但每个实例只对应一台摄像机。
 

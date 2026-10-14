@@ -35,6 +35,17 @@ jobs:
         with:
           gradle-version: '8.13'
       - run: cargo install cargo-ndk --version 4.1.2 --locked
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.7.0
+      - name: Install exact runtime inventory tools
+        run: |
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
+      - name: Export only the selected Android release runtime graph
+        run: |
+          gradle -p clients/android -I "$PWD/scripts/export-android-runtime.gradle" \
+            "-PxssiRuntimeExport=$RUNNER_TEMP/xcoc-android-runtime.json" :app:exportXssiRuntimeInventory
       - name: Build device Rust bridge
         run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" bash scripts/build-android-rust.sh
       - name: Build host media libraries for JNI tests
@@ -42,6 +53,23 @@ jobs:
       - name: Build host bridge for JVM tests
         run: cargo build --locked -p xcoc-mobile-ffi --features jni-host-tests
       - uses: ./.github/actions/package-android-release
+      - name: Inventory final Android archives without repacking them
+        run: |
+          python3 scripts/package-mobile-inventory.py --platform android \
+            --package dist/xcoc-android-arm64-v8a-unsigned.apk \
+            --package dist/xcoc-android-arm64-v8a-unsigned.aab \
+            --gradle-export "$RUNNER_TEMP/xcoc-android-runtime.json" \
+            --output "$RUNNER_TEMP/xcoc-android-delivery"
+      - name: Finalize and verify the complete Android release manifest
+        run: |
+          python3 scripts/verify-release-inventory.py --stage "$RUNNER_TEMP/xcoc-android-delivery" \
+            --target aarch64-linux-android
+          tar -C "$RUNNER_TEMP/xcoc-android-delivery" -czf dist/xcoc-android-arm64-v8a-delivery.tar.gz .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xcoc-android-runtime-inventory
+          path: dist/xcoc-android-arm64-v8a-delivery.tar.gz
+          if-no-files-found: error
 
   ios:
     name: iOS Release artifacts
@@ -58,4 +86,33 @@ jobs:
       - run: bash scripts/build-ios-rust.sh
       - run: brew install xcodegen
       - run: cd clients/ios && xcodegen generate
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.7.0
+      - name: Install exact runtime inventory tools
+        run: |
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
       - uses: ./.github/actions/package-ios-release
+      - name: Inventory final device and simulator artifacts separately
+        run: |
+          python3 scripts/package-mobile-inventory.py --platform ios-device \
+            --package dist/xcoc-ios-arm64-unsigned.ipa \
+            --package dist/xcoc-ios-arm64-unsigned.xcarchive.zip \
+            --output "$RUNNER_TEMP/xcoc-ios-device-delivery"
+          python3 scripts/package-mobile-inventory.py --platform ios-simulator \
+            --package dist/xcoc-ios-simulator-arm64.app.zip \
+            --output "$RUNNER_TEMP/xcoc-ios-simulator-delivery"
+      - name: Finalize and verify complete iOS release manifests
+        run: |
+          python3 scripts/verify-release-inventory.py --stage "$RUNNER_TEMP/xcoc-ios-device-delivery" \
+            --target aarch64-apple-ios
+          python3 scripts/verify-release-inventory.py --stage "$RUNNER_TEMP/xcoc-ios-simulator-delivery" \
+            --target aarch64-apple-ios-sim
+          tar -C "$RUNNER_TEMP/xcoc-ios-device-delivery" -czf dist/xcoc-ios-arm64-delivery.tar.gz .
+          tar -C "$RUNNER_TEMP/xcoc-ios-simulator-delivery" -czf dist/xcoc-ios-simulator-arm64-delivery.tar.gz .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xcoc-ios-runtime-inventory
+          path: dist/*-delivery.tar.gz
+          if-no-files-found: error

@@ -17,6 +17,9 @@
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="XcocClient">
+        <?if $(var.IncludeInventory) = 1 ?>
+        <Directory Id="ReleaseInventoryDirectory" Name="share" />
+        <?endif?>
         <Component Id="ClientProgram" Guid="5DC4202D-5451-4683-8FDC-35D4AC24B8FB" Bitness="always64">
           <File Id="ClientExe" Source="$(var.ClientExe)" Name="xcoc.exe" KeyPath="yes" />
           <File Id="NativeNotice" Source="$(var.NativeNotice)" Name="NOTICE.txt" />
@@ -31,6 +34,9 @@
 
     <Feature Id="Complete" Title="xcoc program" Description="Install all Xcoc camera edge client capabilities." Level="1" AllowAbsent="no">
       <ComponentRef Id="ClientProgram" />
+      <?if $(var.IncludeInventory) = 1 ?>
+      <ComponentGroupRef Id="ReleaseInventoryFiles" />
+      <?endif?>
     </Feature>
   </Package>
 </Wix>

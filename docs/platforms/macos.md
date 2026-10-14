@@ -2,7 +2,7 @@
 
 适用于 Apple Silicon（arm64）Mac。默认配置为 `/Library/Application Support/XcocClient/config.json`，录像位于同级 `recordings`。客户端采用手工安装，可先前台运行，再选择配置 launchd。
 
-当前源码版本为 **1.1.0**；截至 2026-10-10，公开 Release 仍是 v1.0.0。下列 1.1.0 安装命令用于取得同版构建产物之后；先核对[发行页](https://github.com/isarmg/xcoc/releases)，未发布时使用本页的源码构建。
+当前源码候选版本为 **1.1.3**；公开版本为 [v1.1.2](https://github.com/isarmg/xcoc/releases/tag/v1.1.2)，本轮候选尚未发布。下列候选安装命令用于取得同版源码构建产物之后；正式下载以对应发行页的实际资产为准。
 
 安装前准备服务端 HTTPS 根地址和实例授权码，并核对[共同部署准备](../platform-setup.md#部署前准备)。配对字段和摄像头 JSON 统一见[配置指南](../configuration.md)，业务状态与录像排障见[运行维护](../operations.md)。
 
@@ -19,11 +19,11 @@ macOS 发行格式为 arm64 二进制压缩包，没有 PKG、安装/卸载助�
 uname -m
 # 对比同版 SHA256SUMS 中的归档哈希，再解压到独立目录。
 shasum -a 256 ./xcoc-macos-arm64.tar.gz
-mkdir xcoc-1.1.0-macos
-tar -xzf ./xcoc-macos-arm64.tar.gz -C xcoc-1.1.0-macos
+mkdir xcoc-1.1.3-macos
+tar -xzf ./xcoc-macos-arm64.tar.gz -C xcoc-1.1.3-macos
 # 创建程序目录，将归档中的实际二进制安装到固定路径。
 sudo install -d -m 0755 /usr/local/bin
-sudo install -m 0755 xcoc-1.1.0-macos/target/release/xcoc /usr/local/bin/xcoc
+sudo install -m 0755 xcoc-1.1.3-macos/target/release/xcoc /usr/local/bin/xcoc
 # 核对安装版本，完成 Server 配对和摄像头探测。
 /usr/local/bin/xcoc --version
 /usr/local/bin/xcoc media-worker --check

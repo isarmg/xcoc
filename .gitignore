@@ -14,3 +14,6 @@
 /dist/
 /clients/ios/ReleaseBuild/
 __pycache__/
+
+/packaging/windows/bin/
+/packaging/windows/obj/

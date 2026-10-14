@@ -1,4 +1,5 @@
 import XCTest
+import XcocRust
 @testable import XcocCamera
 
 final class RustBridgeTests: XCTestCase {
@@ -23,5 +24,22 @@ final class RustBridgeTests: XCTestCase {
     func testInvalidInputIsRejected() {
         XCTAssertThrowsError(try RustBridge.call(0, ["operation": "open", "pairing": [:]]))
         XCTAssertFalse(RustBridge.frame(0, Data([0x65]), timestamp: 0))
+    }
+
+    func testMalformedResultDescriptorIsRejectedBeforeReadingItsPointer() {
+        var result = XcscFfiResultV1()
+        result.abi_revision = UInt32(XCSC_FFI_ABI_REVISION)
+        result.status = Int32(XCSC_FFI_OK)
+        result.bytes.length = 1
+        XCTAssertThrowsError(try RustBridge.checkedOutput(&result, status: Int32(XCSC_FFI_OK)))
+        result.bytes.data = UnsafeMutablePointer<UInt8>(bitPattern: 1)
+        result.bytes.length = Int(XCSC_FFI_MAX_OUTPUT_BYTES) + 1
+        XCTAssertThrowsError(try RustBridge.checkedOutput(&result, status: Int32(XCSC_FFI_OK)))
+        result.bytes.length = 1
+        result.status = Int32(XCSC_FFI_INVALID_ARGUMENT)
+        XCTAssertThrowsError(try RustBridge.checkedOutput(&result, status: Int32(XCSC_FFI_OK)))
+        result.status = Int32(XCSC_FFI_OK)
+        result.abi_revision += 1
+        XCTAssertThrowsError(try RustBridge.checkedOutput(&result, status: Int32(XCSC_FFI_OK)))
     }
 }

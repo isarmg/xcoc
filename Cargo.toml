@@ -1,6 +1,6 @@
 [package]
 name = "xcoc"
-version = "1.1.2"
+version = "1.1.3"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ members = [".", "crates/mobile-ffi"]
 resolver = "3"
 
 [dependencies]
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "9cff5bc1425072533fcb8984ee4820b1f6ab6a5c", version = "=1.0.4" }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "c0cf985f82663199e270112a72bbf54ce48ff415", version = "=1.0.5" }
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.23"
@@ -31,7 +31,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 zeroize = { version = "1.9.1", features = ["derive"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "9cff5bc1425072533fcb8984ee4820b1f6ab6a5c", version = "=1.0.4" }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "c0cf985f82663199e270112a72bbf54ce48ff415", version = "=1.0.5" }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "=0.8.1"

@@ -25,12 +25,12 @@ struct CameraView: View {
                     TextField("Server HTTPS 地址", text: $server).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     TextField("摄像头名称", text: $name)
                     TextField("实例授权码", text: $code).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("配对") { camera.pair(server: server, code: code, name: name); code = "" }.disabled(camera.running || camera.stopping || camera.pairing)
+                    Button("配对") { camera.pair(server: server, code: code, name: name); code = "" }.disabled(camera.starting || camera.running || camera.stopping || camera.cleanupPending || camera.pairing)
                 }
                 Section("摄像头") {
-                    Toggle("使用前置摄像头", isOn: $front).disabled(camera.running)
-                    Button(camera.running ? "停止摄像头" : "启动摄像头") {
-                        if camera.running { camera.stop() } else { camera.start(front: front) }
+                    Toggle("使用前置摄像头", isOn: $front).disabled(camera.starting || camera.running || camera.stopping || camera.cleanupPending)
+                    Button(camera.cleanupPending ? "重试停止" : (camera.starting ? "取消启动" : (camera.running ? "停止摄像头" : "启动摄像头"))) {
+                        if camera.starting || camera.running || camera.cleanupPending { camera.stop() } else { camera.start(front: front) }
                     }.disabled(!camera.paired || camera.stopping || camera.pairing)
                     Text(camera.status)
                     Text("请保持应用在前台。进入后台会停止采集；视频在 Server 录像。").font(.footnote)

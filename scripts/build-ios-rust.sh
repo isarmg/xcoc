@@ -5,6 +5,7 @@ cd "$root"
 export IPHONEOS_DEPLOYMENT_TARGET=16.0
 cargo build -p xcoc-mobile-ffi --release --locked --target aarch64-apple-ios
 cargo build -p xcoc-mobile-ffi --release --locked --target aarch64-apple-ios-sim
+python3 scripts/check-mobile-header.py
 vendor="$root/clients/ios/Vendor"
 mkdir -p "$vendor"
 if test -d "$vendor/XcocRust.xcframework"; then

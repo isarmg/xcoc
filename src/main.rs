@@ -18,7 +18,7 @@ use std::io::Write;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
-    io::{self, Read},
+    io,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -49,6 +49,8 @@ const MAX_SNAPSHOT_RESPONSE_BYTES: usize = 1024 * 1024;
 struct Cli {
     #[arg(long, global = true, default_value_os_t = default_config_path())]
     config: PathBuf,
+    #[arg(long, global = true, default_value = "human", value_parser = ["human", "json", "ndjson"])]
+    format: String,
     #[command(subcommand)]
     command: CommandKind,
 }
@@ -63,7 +65,7 @@ enum CommandKind {
         interactive: bool,
         #[arg(long)]
         replace: bool,
-        /// Maximum time for the complete interactive input sequence.
+        /// Maximum time for the input document or complete interactive input sequence.
         #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=3600))]
         timeout_seconds: u64,
     },
@@ -94,8 +96,6 @@ enum CommandKind {
         level: Option<String>,
         #[arg(long)]
         follow: bool,
-        #[arg(long, default_value = "json")]
-        format: String,
         #[arg(long, default_value = "60s")]
         timeout: String,
     },
@@ -128,6 +128,9 @@ enum CameraCommand {
         instance_id: Uuid,
         #[arg(long)]
         input_stdin: bool,
+        /// Maximum time to receive the protected input document.
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=3600))]
+        timeout_seconds: u64,
     },
     /// List cameras without RTSP URLs or credentials.
     List,
@@ -449,9 +452,50 @@ fn main() -> std::process::ExitCode {
             {
                 failure = xcsc::cli::fail(11, "diagnostics_unavailable");
             }
-            let exit = xcsc::cli::emit("xcoc", "command", "human", &Err(failure), &XcocErrors);
+            let exit = xcsc::cli::emit(
+                "xcoc",
+                "command",
+                requested_format(),
+                &Err(failure),
+                &XcocErrors,
+            );
             std::process::ExitCode::from(exit)
         }
+    }
+}
+
+fn requested_format() -> &'static str {
+    let raw = std::env::args()
+        .skip(1)
+        .flat_map(|argument| {
+            if let Some(format) = argument.strip_prefix("--format=") {
+                vec!["--format".to_owned(), format.to_owned()]
+            } else {
+                vec![argument]
+            }
+        })
+        .collect::<Vec<_>>();
+    xcsc::cli::requested_error_format(&raw)
+}
+
+fn command_label(command: &CommandKind) -> &'static str {
+    match command {
+        CommandKind::Setup { .. } => "setup",
+        CommandKind::Run { .. } => "run",
+        CommandKind::Status => "status",
+        CommandKind::Unpair { .. } => "unpair",
+        #[cfg(windows)]
+        CommandKind::Logs { .. } => "logs",
+        #[cfg(windows)]
+        CommandKind::Service { .. } => "service",
+        CommandKind::Camera { command } => match command {
+            CameraCommand::Presets => "camera presets",
+            CameraCommand::Devices => "camera devices",
+            CameraCommand::Apply { .. } => "camera apply",
+            CameraCommand::List => "camera list",
+            CameraCommand::Remove { .. } => "camera remove",
+            CameraCommand::Discover { .. } => "camera discover",
+        },
     }
 }
 
@@ -571,7 +615,26 @@ fn run_main() -> anyhow::Result<()> {
         );
         return windows_service_host::dispatch();
     }
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            error.print()?;
+            return Ok(());
+        }
+        Err(error) => {
+            let code = if error.kind() == clap::error::ErrorKind::UnknownArgument {
+                "unknown_option"
+            } else {
+                "invalid_input"
+            };
+            return Err(xcsc::cli::fail(2, code).into());
+        }
+    };
     #[cfg(windows)]
     if let CommandKind::Logs {
         tail,
@@ -582,10 +645,10 @@ fn run_main() -> anyhow::Result<()> {
         task_id,
         level,
         follow,
-        format,
         timeout,
     } = &cli.command
     {
+        let format = &cli.format;
         let mut raw = vec![
             "logs".to_owned(),
             "--tail".into(),
@@ -633,12 +696,19 @@ fn run_main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    tokio::runtime::Runtime::new()
+    let format = cli.format.clone();
+    let command = command_label(&cli.command);
+    let result = tokio::runtime::Runtime::new()
         .context("start xcoc runtime")?
-        .block_on(async_main(cli))
+        .block_on(async_main(cli))?;
+    let exit = xcsc::cli::emit("xcoc", command, &format, &Ok(result), &XcocErrors);
+    if exit != 0 {
+        std::process::exit(i32::from(exit));
+    }
+    Ok(())
 }
 
-async fn async_main(cli: Cli) -> anyhow::Result<()> {
+async fn async_main(cli: Cli) -> anyhow::Result<Value> {
     match cli.command {
         CommandKind::Setup {
             input_stdin,
@@ -655,7 +725,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             )
             .await
         }
-        CommandKind::Run { wait_for_config } => run(&cli.config, wait_for_config, None).await,
+        CommandKind::Run { wait_for_config } => {
+            run(&cli.config, wait_for_config, None).await?;
+            Ok(serde_json::json!({"stopped":true}))
+        }
         CommandKind::Status => status(&cli.config),
         #[cfg(windows)]
         CommandKind::Logs { .. } => unreachable!("logs is dispatched before the async runtime"),
@@ -667,7 +740,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 "the installed Windows service uses only the default configuration path"
             );
             windows_service_host::preflight_setup()?;
-            windows_service_host::configure_and_start(!no_boot_start)
+            windows_service_host::configure_and_start(!no_boot_start)?;
+            Ok(serde_json::json!({"configured":true,"running":true,"boot_start":!no_boot_start}))
         }
         CommandKind::Camera { command } => camera_command(&cli.config, command).await,
     }
@@ -679,7 +753,7 @@ async fn setup(
     interactive: bool,
     replace: bool,
     timeout_seconds: u64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Value> {
     ensure!(
         input_stdin ^ interactive,
         "setup requires exactly one of --interactive or --input-stdin"
@@ -719,15 +793,16 @@ async fn setup(
     let input: Zeroizing<SetupInput> = Zeroizing::new(if interactive {
         SetupInput {
             server: xcsc::cli::prompt_text("Server HTTPS origin", MAX_URL_BYTES, input_deadline)?,
-            authorization_code: xcsc::cli::prompt_text(
-                "Authorization code (visible)",
+            authorization_code: xcsc::cli::prompt_secret(
+                "Authorization code",
                 MAX_AUTHORIZATION_CODE_BYTES,
                 input_deadline,
-            )?,
+            )?
+            .to_string(),
             name: xcsc::cli::prompt_text("Client name", MAX_NAME_BYTES, input_deadline)?,
         }
     } else {
-        read_stdin_json()?
+        xcsc::cli::stdin_document(Duration::from_secs(timeout_seconds))?
     });
     let server = validate_server_origin(&input.server)?;
     validate_name(&input.name)?;
@@ -811,21 +886,13 @@ async fn setup(
             )
         })?;
     }
-    println!(
-        "paired camera instance {}; media tools verified; configured: {}",
-        response.client_id,
-        state
-            .instances
-            .iter()
-            .any(|value| value.instance_id == response.client_id && value.camera.is_some())
-    );
-    if let Some(archive) = archived_state {
-        println!(
-            "incompatible pairing state was preserved at {}; re-pairing completed",
-            archive.display()
-        );
-    }
-    Ok(())
+    Ok(serde_json::json!({
+        "committed":true,
+        "instance_id":response.client_id,
+        "media_tools_verified":true,
+        "configured":state.instances.iter().any(|value| value.instance_id == response.client_id && value.camera.is_some()),
+        "preserved_pairing_archive":archived_state,
+    }))
 }
 
 #[cfg(any(windows, test))]
@@ -945,28 +1012,24 @@ async fn interactive_camera_setup(deadline: Instant) -> anyhow::Result<Camera> {
     Ok(camera)
 }
 
-fn status(path: &Path) -> anyhow::Result<()> {
+fn status(path: &Path) -> anyhow::Result<Value> {
     #[cfg(windows)]
     secure_existing_default_config(path)?;
     validate_recording_store(&recording_root())?;
     let state = load_state(path)?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "paired": true,
-            "installation_id": state.installation_id,
-            "instances": state.instances.iter().map(|instance| serde_json::json!({
-                "server": instance.server,
-                "instance_id": instance.instance_id,
-                "name": instance.name,
-                "configured": instance.camera.is_some(),
-            })).collect::<Vec<_>>(),
-        }))?
-    );
-    Ok(())
+    Ok(serde_json::json!({
+        "paired": true,
+        "installation_id": state.installation_id,
+        "instances": state.instances.iter().map(|instance| serde_json::json!({
+            "server": instance.server,
+            "instance_id": instance.instance_id,
+            "name": instance.name,
+            "configured": instance.camera.is_some(),
+        })).collect::<Vec<_>>(),
+    }))
 }
 
-fn unpair(path: &Path, instance_id: Uuid) -> anyhow::Result<()> {
+fn unpair(path: &Path, instance_id: Uuid) -> anyhow::Result<Value> {
     #[cfg(windows)]
     secure_existing_default_config(path)?;
     let mut state = load_state(path)?;
@@ -983,30 +1046,22 @@ fn unpair(path: &Path, instance_id: Uuid) -> anyhow::Result<()> {
     } else {
         save_state(path, &state)?;
     }
-    println!("removed local pairing {instance_id}; recordings were preserved");
-    Ok(())
+    Ok(
+        serde_json::json!({"committed":true,"removed_instance_id":instance_id,"recordings_preserved":true,"remote_authorization_revoked":false}),
+    )
 }
 
-async fn camera_command(path: &Path, command: CameraCommand) -> anyhow::Result<()> {
+async fn camera_command(path: &Path, command: CameraCommand) -> anyhow::Result<Value> {
     match command {
         CameraCommand::Presets => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&camera_presets::catalog())?
-            );
-            return Ok(());
+            return Ok(serde_json::to_value(camera_presets::catalog())?);
         }
         CameraCommand::Devices => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&local_camera::list_devices().await?)?
-            );
-            return Ok(());
+            return Ok(serde_json::to_value(local_camera::list_devices().await?)?);
         }
         CameraCommand::Discover { timeout_seconds } => {
             let devices = onvif::discover(Duration::from_secs(timeout_seconds)).await?;
-            println!("{}", serde_json::to_string_pretty(&devices)?);
-            return Ok(());
+            return Ok(serde_json::to_value(devices)?);
         }
         _ => {}
     }
@@ -1021,9 +1076,11 @@ async fn camera_command(path: &Path, command: CameraCommand) -> anyhow::Result<(
         CameraCommand::Apply {
             instance_id,
             input_stdin,
+            timeout_seconds,
         } => {
             ensure!(input_stdin, "camera apply requires --input-stdin");
-            let mut camera: Camera = read_stdin_json()?;
+            let mut camera: Camera =
+                xcsc::cli::stdin_document(Duration::from_secs(timeout_seconds))?;
             camera.validate()?;
             camera.id = instance_id;
             let instance = state
@@ -1033,6 +1090,9 @@ async fn camera_command(path: &Path, command: CameraCommand) -> anyhow::Result<(
                 .context("camera instance is not paired")?;
             instance.camera = Some(camera);
             save_state(path, &state)?;
+            Ok(
+                serde_json::json!({"committed":true,"instance_id":instance_id,"camera_configured":true,"restart_required":false}),
+            )
         }
         CameraCommand::List => {
             let views = state
@@ -1051,7 +1111,7 @@ async fn camera_command(path: &Path, command: CameraCommand) -> anyhow::Result<(
                     })
                 })
                 .collect::<Vec<_>>();
-            println!("{}", serde_json::to_string_pretty(&views)?);
+            Ok(serde_json::to_value(views)?)
         }
         CameraCommand::Remove { instance_id } => {
             let instance = state
@@ -1061,9 +1121,11 @@ async fn camera_command(path: &Path, command: CameraCommand) -> anyhow::Result<(
                 .context("camera instance is not paired")?;
             ensure!(instance.camera.take().is_some(), "camera is not configured");
             save_state(path, &state)?;
+            Ok(
+                serde_json::json!({"committed":true,"instance_id":instance_id,"camera_configured":false,"pairing_preserved":true,"recordings_preserved":true}),
+            )
         }
     }
-    Ok(())
 }
 
 async fn run(
@@ -2517,18 +2579,6 @@ fn device_client() -> anyhow::Result<reqwest::Client> {
         .no_proxy()
         .user_agent(concat!("xcoc/", env!("CARGO_PKG_VERSION")))
         .build()?)
-}
-
-fn read_stdin_json<T: for<'de> Deserialize<'de>>() -> anyhow::Result<T> {
-    let mut bytes = Vec::new();
-    io::stdin()
-        .take(MAX_INPUT_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() as u64 <= MAX_INPUT_BYTES,
-        "stdin JSON exceeds 1 MiB"
-    );
-    serde_json::from_slice(&bytes).context("stdin is not the expected JSON document")
 }
 
 fn config_fingerprint(path: &Path) -> anyhow::Result<Option<ConfigFingerprint>> {

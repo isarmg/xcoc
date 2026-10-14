@@ -379,7 +379,10 @@ fn local_unpair_preserves_other_pairings_and_removes_the_final_config() {
         &state_with(vec![camera(old, "old"), camera(retained, "retained")]),
     )
     .unwrap();
-    unpair(&path, old).unwrap();
+    let result = unpair(&path, old).unwrap();
+    assert_eq!(result["committed"], true);
+    assert_eq!(result["recordings_preserved"], true);
+    assert_eq!(result["removed_instance_id"], old.to_string());
     let state = load_state(&path).unwrap();
     assert_eq!(state.instances.len(), 1);
     assert_eq!(state.instances[0].instance_id, retained);
@@ -731,9 +734,12 @@ async fn removing_a_camera_keeps_its_paired_instance_slot() {
     let id = Uuid::new_v4();
     save_state(&path, &state_with(vec![camera(id, "front")])).unwrap();
 
-    camera_command(&path, CameraCommand::Remove { instance_id: id })
+    let result = camera_command(&path, CameraCommand::Remove { instance_id: id })
         .await
         .unwrap();
+    assert_eq!(result["committed"], true);
+    assert_eq!(result["camera_configured"], false);
+    assert_eq!(result["pairing_preserved"], true);
 
     let state = load_state(&path).unwrap();
     assert_eq!(state.instances.len(), 1);

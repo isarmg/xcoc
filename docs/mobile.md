@@ -45,7 +45,7 @@ iOS Debug/Release 模拟器构建、Swift 单元测试及未签名实机 Release
 
 ## 移动端 Release 构建输出
 
-以下文件由当前源码的完整 CI 或手动构建生成。公开 v1.0.0 Release 不包含移动资产；1.1.0 标签和 Release 发布完成后，才可从对应下载页取得同版文件。
+以下文件由当前源码的完整 CI 或手动构建生成。已公开 [v1.1.2](https://github.com/isarmg/xcoc/releases/tag/v1.1.2) 包含下列移动文件；1.1.3 候选尚未发布，其新增行为需同版源码构建。
 
 主分支和 PR 的完整 CI 定义了 Android/iOS Release 构建，并上传以下 Actions artifacts；
 也可在 `xcoc Mobile Release builds` workflow 选择明确源码 ref 手动构建。手动执行只保留构建产物，

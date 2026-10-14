@@ -9,8 +9,8 @@ android {
         applicationId = "org.sarmg.xcoc"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1_001_002
-        versionName = "1.1.2"
+        versionCode = 1_001_003
+        versionName = "1.1.3"
         ndk { abiFilters += "arm64-v8a" }
     }
     compileOptions {

@@ -24,7 +24,7 @@ def block(source, marker):
 class LifecycleSourceTests(unittest.TestCase):
     def test_store_stops_capture_without_waiting_for_network_control(self):
         source = (ROOT / "CameraStore.swift").read_text()
-        stop = block(source, "func stop()")
+        stop = block(source, "func stop(")
         self.assertLess(stop.index("lifecycle.cancel()"), stop.index("control.async"))
         controlled = block(stop, "control.async")
         self.assertNotIn("encoder.stop", controlled)
@@ -47,18 +47,19 @@ class LifecycleSourceTests(unittest.TestCase):
         source = (ROOT / "CameraStore.swift").read_text()
         pair = block(source, "func pair(server:")
         self.assertIn("@Published var pairing = false", source)
-        self.assertIn("guard !running, !stopping, !pairing", pair)
+        self.assertIn("guard !starting, !running, !stopping, !cleanupPending, !pairing", pair)
         self.assertLess(pair.index("pairing = true"), pair.index("control.async"))
         self.assertEqual(pair.count("self.pairing = false"), 2)
         start = block(source, "func start(front:")
-        self.assertIn("guard !running, !stopping, !pairing, paired", start)
+        self.assertIn("guard !starting, !running, !stopping, !cleanupPending, !pairing, paired", start)
         self.assertLess(start.index("!self.pairing"), start.index("guard allowed"))
         view = (ROOT / "XcocCameraApp.swift").read_text()
-        self.assertIn(".disabled(camera.running || camera.stopping || camera.pairing)", view)
+        self.assertIn(".disabled(camera.starting || camera.running || camera.stopping || camera.cleanupPending || camera.pairing)", view)
         self.assertIn(".disabled(!camera.paired || camera.stopping || camera.pairing)", view)
 
     def test_encoder_start_cannot_escape_its_serial_queue_operation(self):
         source = (ROOT / "CameraEncoder.swift").read_text()
+        source = source[source.index("final class CameraEncoder"):]
         start = block(source, "func start(front:")
         self.assertEqual(start.count("queue.async"), 1)
         self.assertEqual(start.count("lifecycle.isCurrent(captureGeneration)"), 3)

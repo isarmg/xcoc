@@ -22,12 +22,15 @@ jobs:
           - os: ubuntu-24.04
             asset: xcoc-linux-x86_64
             binary: target/release/xcoc
+            target: x86_64-unknown-linux-gnu
           - os: windows-2025
             asset: xcoc-windows-x86_64
             binary: target/release/xcoc.exe
+            target: x86_64-pc-windows-msvc
           - os: macos-15
             asset: xcoc-macos-arm64
             binary: target/release/xcoc
+            target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -50,6 +53,34 @@ jobs:
         run: rustup toolchain install 1.99.0 --profile minimal
       - name: Verify locked client support boundary
         run: python scripts/check-xcsc-source.py
+      - name: Install pinned Node.js for runtime dependency inventory
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.7.0
+          check-latest: false
+      - name: Provide exact LLVM native dependency reader
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $reader=Join-Path $env:ProgramFiles 'LLVM\bin\llvm-readobj.exe'
+          $exact=Test-Path -LiteralPath $reader
+          if ($exact) { $exact=(& $reader --version) -match 'LLVM version 20[.]1[.]8' }
+          if (-not $exact) {
+            choco install llvm --version=20.1.8 --force --yes --no-progress
+            if ($LASTEXITCODE) { throw 'Exact LLVM reader installation failed' }
+          }
+          $version=& $reader --version
+          if ($LASTEXITCODE -or -not ($version -match 'LLVM version 20[.]1[.]8')) { throw 'Required LLVM reader differs from its exact version' }
+          (Split-Path -Parent $reader) >> $env:GITHUB_PATH
+      - name: Install exact Cargo inventory tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-audit --version 0.22.2
+          cargo install --locked cargo-cyclonedx --version 0.5.9
+      - name: Install exact WiX extraction tool
+        if: runner.os == 'Windows'
+        run: dotnet tool install --global wix --version 4.0.6
       - name: Build reviewed native media libraries
         uses: ./.github/actions/native-media
       - name: Build release binary
@@ -60,31 +91,30 @@ jobs:
       - name: Prepare native licenses and relinkable source
         shell: bash
         run: python packaging/native/package-source.py --work "$RUNNER_TEMP/xcoc-native" --asset "${{ matrix.asset }}" --output dist
-      - name: Package Linux binary and systemd installer
-        if: runner.os == 'Linux'
+      - name: Package final desktop runtime inventory and checksums
         shell: bash
         run: |
-          mkdir -p dist
-          tar -czf "dist/${{ matrix.asset }}.tar.gz" \
-            "${{ matrix.binary }}" packaging/linux/install.sh \
-            packaging/linux/xcoc.service README.md LICENSE-APACHE packaging/native/NOTICE.txt dist/native-licenses
-      - name: Package macOS binary
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          mkdir -p dist
-          tar -czf "dist/${{ matrix.asset }}.tar.gz" \
-            "${{ matrix.binary }}" README.md LICENSE-APACHE packaging/native/NOTICE.txt dist/native-licenses
-      - name: Package Windows binary
+          set -euo pipefail
+          python scripts/package-desktop-inventory.py --binary "${{ matrix.binary }}" \
+            --native-work "$RUNNER_TEMP/xcoc-native" --target "${{ matrix.target }}" \
+            --asset "${{ matrix.asset }}" --output dist
+      - name: Build and verify final native Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path '${{ matrix.binary }}', README.md, LICENSE-APACHE, packaging/native/NOTICE.txt, dist/native-licenses -DestinationPath 'dist/${{ matrix.asset }}.zip'
           .\packaging\windows\build-installer.ps1 `
             -ClientExe "$PWD\${{ matrix.binary }}" `
+            -NativeWork "$env:RUNNER_TEMP\xcoc-native" `
             -Version $($env:GITHUB_REF_NAME.Substring(1)) `
             -Output "$PWD\dist"
+          if ($LASTEXITCODE) { throw 'Native installer build failed' }
+          $installers=@(Get-ChildItem -LiteralPath dist -Filter '*.msi' -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one final native installer' }
+          python scripts/package-native-delivery.py `
+            --artifact $installers[0].FullName --inner-bom ($installers[0].FullName+'.inner-sbom.cdx.json') `
+            --target x86_64-pc-windows-msvc --stage "$env:RUNNER_TEMP\xcoc-native-delivery" `
+            --output "$PWD\dist\${{ matrix.asset }}-native-delivery.tar.gz"
+          if ($LASTEXITCODE) { throw 'Final installer payload verification failed' }
       - name: Retain release input
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -93,6 +123,7 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*.msi
+            dist/*.sha256
           if-no-files-found: error
 
   mobile:

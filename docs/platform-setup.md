@@ -1,6 +1,6 @@
 # xcoc 平台安装入口
 
-当前源码版本为 **1.1.0**。截至 2026-10-10，公开 GitHub Release 仍为 v1.0.0，只有桌面资产；1.1.0 移动未签名产物已有 CI 构建记录，尚未发布 GitHub Release。先选择设备平台，再按对应页面完成安装、构建和排障。
+当前源码候选版本为 **1.1.3**，尚未发布。已公开 [v1.1.2](https://github.com/isarmg/xcoc/releases/tag/v1.1.2) 桌面与移动资产；本轮新增行为须使用同版源码构建，旧包不包含候选修复。先选择设备平台，再按对应页面完成安装、构建和排障。
 
 | 设备平台 | 安装、构建与维护 |
 |---|---|
@@ -17,7 +17,7 @@
 1. 先核对[客户端 Releases](https://github.com/isarmg/xcoc/releases)上的实际版本和资产。对应版本发布后，下载本机平台资产和 `SHA256SUMS`；使用源码时，先完成同版构建。Linux/macOS 资产名不包含版本号，必须确认所在 Release 的版本。Windows 正式安装用 MSI，ZIP 仅用于手工运行。
 2. 请服务端管理员创建摄像头实例，提供 HTTPS 根地址、实例授权码。桌面一次安装可管理多个实例，每个实例对应一台摄像机；移动端只管理一份配对和一个主码流。
 3. 桌面使用内置媒体工作进程，以 `xcoc media-worker --check` 检查链接的 FFmpeg 库。网络摄像头不需要 `ffmpeg`/`ffprobe` 命令；内置/USB 摄像头另需带对应采集后端和 `libx264` 的 `ffmpeg`，且实际采集账户的 PATH 必须能找到它。见[媒体运行时](https://github.com/isarmg/xcoc/blob/main/docs/media-worker.md)与[兼容说明](https://github.com/isarmg/xcoc/blob/main/docs/camera-support.md)。手机使用系统摄像头/编码器，无需安装 FFmpeg。
-4. 服务端 HTTPS 与发布用 RTSPS 证书都必须可信且名称匹配；摄像头 RTSP 可在本地网络内使用。授权码在桌面交互提示中明文回显，摄像头密码隐藏输入。
+4. 服务端 HTTPS 与发布用 RTSPS 证书都必须可信且名称匹配；摄像头 RTSP 可在本地网络内使用。授权码在桌面交互提示中隐藏输入，摄像头密码隐藏输入。
 5. 平台页的注释解释命令用途。`INSTANCE_UUID`、`OLD_INSTANCE_UUID` 替换为实际实例 UUID；不要将授权码、摄像头密码或媒体 token 放在命令参数中。
 
 | 平台 | 发行安装方式 | 服务与默认配置 | 本地录像 |

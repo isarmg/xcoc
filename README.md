@@ -19,7 +19,7 @@ xcos 的摄像头边缘客户端。在摄像头所在网络保存设备凭据、
 
 ## 如何快速部署
 
-在 [下载页](https://github.com/isarmg/xcoc/releases) 选择平台和版本并核对同版 `SHA256SUMS`。当前 1.1.0 的内置媒体与移动端功能需使用对应版本产物；只有旧版资产时，先按下节编译，不能套用新版命令。
+在 [下载页](https://github.com/isarmg/xcoc/releases) 选择平台和版本并核对同版 `SHA256SUMS`。当前源码候选为 1.1.3，尚未发布。已公开 [v1.1.2](https://github.com/isarmg/xcoc/releases/tag/v1.1.2) 包含桌面和移动资产；本轮 CLI 和 iOS 修复需按下节从同版源码构建，不能宣称旧包包含这些行为。
 
 Linux 在解压目录或完成编译的源码根目录执行：
 
@@ -29,7 +29,7 @@ sudo xcoc setup --interactive
 sudo xcoc status
 ```
 
-安装会立即启动 systemd 服务，开机自启提示回车默认 Yes。先在 xcos 创建实例，再输入 HTTPS 地址、授权码并配置摄像头；授权码会在交互终端明文显示，不要把凭据写入命令参数或日志。
+安装会立即启动 systemd 服务，开机自启提示回车默认 Yes。先在 xcos 创建实例，再输入 HTTPS 地址、授权码并配置摄像头；授权码在交互终端隐藏输入，不要把凭据写入命令参数或日志。
 
 Windows 使用 MSI 安装后运行 `xcoc setup --interactive`；macOS 手工安装 arm64 程序后运行 `xcoc setup --interactive` 和 `xcoc run`。移动应用需完成所有者签名才能实机安装：未签名 APK、AAB、IPA 或设备归档都不是可直接安装的正式包，模拟器 app 只适用于模拟器。
 
