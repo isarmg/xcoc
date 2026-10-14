@@ -209,6 +209,9 @@ jobs:
       - name: Build reviewed native media libraries
         if: ${{ needs.scope.outputs.run_full != 'false' }}
         uses: ./.github/actions/native-media
+      - name: Verify Windows native prefix file identities
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
+        run: python -m unittest discover -s packaging/native/tests -p test_provisioning.py -v
       - name: Build native client
         if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: cargo build --locked --release

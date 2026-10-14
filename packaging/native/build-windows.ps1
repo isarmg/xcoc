@@ -24,6 +24,11 @@ if ($LASTEXITCODE) { throw 'The vcpkg checkout has unreviewed changes.' }
 if ($LASTEXITCODE) { throw 'vcpkg bootstrap failed.' }
 & (Join-Path $vcpkg 'vcpkg.exe') install "--x-manifest-root=$PSScriptRoot" "--x-install-root=$installed" --triplet x64-windows-static --host-triplet x64-windows-static --disable-metrics
 if ($LASTEXITCODE) { throw 'Static FFmpeg build failed.' }
+$independent=Join-Path $root ('installed-independent-'+[guid]::NewGuid().ToString('N'))
+$provider=Join-Path $root ('installed-provider-'+[guid]::NewGuid().ToString('N'))
+& (Join-Path $PSScriptRoot 'copy-installed-prefix.ps1') -Source $installed -Destination $independent
+Move-Item -LiteralPath $installed -Destination $provider
+Move-Item -LiteralPath $independent -Destination $installed
 $env:VCPKG_ROOT = $vcpkg
 $env:VCPKG_INSTALLED_ROOT = $installed
 $env:VCPKGRS_TRIPLET = 'x64-windows-static'
