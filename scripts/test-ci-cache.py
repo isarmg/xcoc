@@ -35,7 +35,19 @@ class CacheContractTests(unittest.TestCase):
         self.assertIn('-PxcocEmulatorTests=true', job)
         self.assertNotIn('package-android-release', job)
         self.assertNotIn('native-media', job)
-        self.assertNotIn('sudo ', job)
+        self.assertEqual(job.count('sudo '), 1)
+        self.assertIn('sudo setfacl -m \"u:$(id -u):rw\" /dev/kvm', job)
+        self.assertIn('[[ -c /dev/kvm && ! -L /dev/kvm ]]', job)
+        self.assertIn('\"$RUNNER_ENVIRONMENT\" == github-hosted', job)
+        self.assertNotIn('chmod', job)
+        self.assertNotIn('chown', job)
+        acl = job.split('      - name: Permit this disposable runner user to use KVM\n', 1)[1].split('      - name:', 1)[0]
+        command = acl.split('        run: |\n', 1)[1]
+        command = '\n'.join(line[10:] for line in command.splitlines())
+        for github, environment in [('false', 'github-hosted'), ('true', 'self-hosted')]:
+            run = subprocess.run(['bash', '-eu', '-c', command], env={
+                'GITHUB_ACTIONS': github, 'RUNNER_ENVIRONMENT': environment})
+            self.assertNotEqual(run.returncode, 0)
         self.assertIn('upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a', job)
         script = (ROOT / 'scripts/test-android-install.sh').read_text()
         self.assertIn('RUNNER_ENVIRONMENT:-', script)

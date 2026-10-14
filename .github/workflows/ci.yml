@@ -189,6 +189,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
         with:
           gradle-version: '8.13'
+      - name: Permit this disposable runner user to use KVM
+        run: |
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          [[ -c /dev/kvm && ! -L /dev/kvm ]]
+          if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+            command -v setfacl
+            sudo setfacl -m "u:$(id -u):rw" /dev/kvm
+          fi
+          [[ -r /dev/kvm && -w /dev/kvm ]]
       - name: Prepare disposable Android SDK
         run: |
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "emulator" "system-images;android-36;google_apis;x86_64"
