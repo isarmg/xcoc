@@ -232,6 +232,7 @@ jobs:
           $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           .\packaging\windows\build-installer.ps1 `
             -ClientExe "$PWD\target\release\xcoc.exe" `
+            -NativeWork "$env:RUNNER_TEMP\xcoc-native" `
             -Version $version `
             -Output "$env:RUNNER_TEMP\xcoc-msi"
       - name: Verify custom path, service startup, and state retention
@@ -244,7 +245,7 @@ jobs:
           $stateRoot = Join-Path $env:ProgramData 'XcocClient'
           $cameraId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
           New-Item -ItemType Directory -Force -Path (Join-Path $stateRoot "recordings\$cameraId") | Out-Null
-          $existingState = '{"format":3,"installation_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","instances":[{"server":"https://example.invalid","instance_id":"' + $cameraId + '","access_token":"' + ('a' * 43) + '","name":"CI camera","camera":null}]}'
+          $existingState = '{"format":1,"installation_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","instances":[{"server":"https://example.invalid","instance_id":"' + $cameraId + '","access_token":"' + ('a' * 43) + '","name":"CI camera","camera":null}]}'
           Set-Content -LiteralPath (Join-Path $stateRoot 'config.json') -Value $existingState -NoNewline
           Set-Content -LiteralPath (Join-Path $stateRoot "recordings\$cameraId\existing.mp4") -Value 'existing recording' -NoNewline
           $install = Start-Process msiexec.exe -ArgumentList "/i `"$($msi[0].FullName)`" INSTALLFOLDER=`"$installRoot`" /qn /norestart" -Wait -PassThru

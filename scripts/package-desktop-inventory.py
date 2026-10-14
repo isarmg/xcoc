@@ -24,7 +24,7 @@ def main():
     spec=importlib.util.spec_from_file_location('xcoc_desktop',ROOT/'scripts/prepare-desktop-inventory.py')
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     with tempfile.TemporaryDirectory(prefix='xcoc-desktop-delivery-') as temporary:
-        private=Path(temporary);stage=private/'payload';stage.mkdir(mode=0o755)
+        private=Path(temporary).resolve(strict=True);stage=private/'payload';stage.mkdir(mode=0o755)
         windows=args.target.endswith('windows-msvc')
         runtime='target/release/'+('xcoc.exe' if windows else 'xcoc')
         destination=stage/runtime;destination.parent.mkdir(mode=0o755,parents=True)

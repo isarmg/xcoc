@@ -2,7 +2,7 @@
 
 适用于 Windows x64。正式安装使用 MSI；SCM 服务名为 `XcocClient`，以 LocalSystem 运行。默认配置为 `C:\ProgramData\XcocClient\config.json`，录像位于同级 `recordings`。请在管理员 PowerShell 中执行安装和维护命令。
 
-当前源码候选版本为 **1.1.3**；公开版本为 [v1.1.2](https://github.com/isarmg/xcoc/releases/tag/v1.1.2)，本轮候选尚未发布。下列候选安装命令用于取得同版源码构建产物之后；正式下载以对应发行页的实际资产为准。
+当前源码候选版本为 **1.0.0**；新基线发行尚未完成。下列候选安装命令用于取得同版源码构建产物之后；正式下载以对应发行页的实际资产为准。
 
 安装前准备服务端 HTTPS 根地址和实例授权码，并核对[共同部署准备](../platform-setup.md#部署前准备)。配对字段和摄像头 JSON 统一见[配置指南](../configuration.md)，业务状态与录像排障见[运行维护](../operations.md)。
 
@@ -19,9 +19,9 @@
 
 ```powershell
 # 校验 MSI，与同版 SHA256SUMS 对比。
-Get-FileHash .\xcoc-1.1.3-windows-x64.msi -Algorithm SHA256
+Get-FileHash .\xcoc-1.0.0-windows-x64.msi -Algorithm SHA256
 # 安装程序和 XcocClient 服务，等待向导退出并写入安装日志。
-$msi = (Resolve-Path .\xcoc-1.1.3-windows-x64.msi).Path
+$msi = (Resolve-Path .\xcoc-1.0.0-windows-x64.msi).Path
 $install = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /norestart /l*v `"$env:TEMP\xcoc-install.log`"" -Wait -PassThru
 # 0 成功；3010 表示成功但需重启；其他码先查看日志。
 $install.ExitCode
@@ -106,7 +106,7 @@ sc.exe query XcocClient
 
 ### 6. 修复安装和卸载
 
-本章后续维护若在新 PowerShell 会话中进行，先重新执行第 1 步读取注册表的 `$installRoot` / `$client` 两行。涉及修复或卸载时，再用 `$msi = (Resolve-Path .\xcoc-1.1.3-windows-x64.msi).Path` 指向与已安装产品相匹配的 MSI；文件在其他目录时用其实际完整路径。不要沿用指向另一版本包的变量。
+本章后续维护若在新 PowerShell 会话中进行，先重新执行第 1 步读取注册表的 `$installRoot` / `$client` 两行。涉及修复或卸载时，再用 `$msi = (Resolve-Path .\xcoc-1.0.0-windows-x64.msi).Path` 指向与已安装产品相匹配的 MSI；文件在其他目录时用其实际完整路径。不要沿用指向另一版本包的变量。
 
 校验新版 MSI 后重复安装。升级可能恢复开机自动启动，完成后核对 `sc.exe qc XcocClient`。同版修复和普通卸载分别如下，按需执行：
 
@@ -154,11 +154,11 @@ MSI 和 ZIP 使用同一个静态媒体库构建的单文件客户端，发布�
 $env:RUNNER_TEMP = $env:TEMP
 .\packaging\windows\build-installer.ps1 `
   -ClientExe "$PWD\target\release\xcoc.exe" `
-  -Version "1.1.3" `
+  -Version "1.0.0" `
   -Output "$PWD\dist"
 ```
 
-输出为 `dist\xcoc-1.1.3-windows-x64.msi`。按本页[安装](#1-安装)操作，将 `$msi` 指向该实际文件；本机产物尚没有 GitHub Release 的 `SHA256SUMS`，校验结果应与自己的构建记录对照。对外分发还需完成[发行校验与依赖材料](../media-worker.md#发行与验证边界)。
+输出为 `dist\xcoc-1.0.0-windows-x64.msi`。按本页[安装](#1-安装)操作，将 `$msi` 指向该实际文件；本机产物尚没有 GitHub Release 的 `SHA256SUMS`，校验结果应与自己的构建记录对照。对外分发还需完成[发行校验与依赖材料](../media-worker.md#发行与验证边界)。
 
 ## 后台日志与权限
 

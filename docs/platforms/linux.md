@@ -2,7 +2,7 @@
 
 适用于 Linux x86_64 的 systemd 部署。默认配置为 `/etc/isarmg/xcoc/config.json`，录像为 `/var/lib/isarmg/xcoc/recordings`。
 
-当前源码候选版本为 **1.1.3**；公开版本为 [v1.1.2](https://github.com/isarmg/xcoc/releases/tag/v1.1.2)，本轮候选尚未发布。下列候选安装命令用于取得同版源码构建产物之后；正式下载以对应发行页的实际资产为准。
+当前源码候选版本为 **1.0.0**；新基线发行尚未完成。下列候选安装命令用于取得同版源码构建产物之后；正式下载以对应发行页的实际资产为准。
 
 安装前准备服务端 HTTPS 根地址和实例授权码，并核对[共同部署准备](../platform-setup.md#部署前准备)。配对字段和摄像头 JSON 统一见[配置指南](../configuration.md)，业务状态与录像排障见[运行维护](../operations.md)。
 
@@ -20,9 +20,9 @@ uname -m
 # 计算压缩包哈希，人工对比同版 SHA256SUMS 中该文件的行。
 sha256sum ./xcoc-linux-x86_64.tar.gz
 # 创建本次解压目录，保留发行包中的 target/release 与 packaging 相对布局。
-mkdir xcoc-1.1.3-linux
-tar -xzf ./xcoc-linux-x86_64.tar.gz -C xcoc-1.1.3-linux
-cd xcoc-1.1.3-linux
+mkdir xcoc-1.0.0-linux
+tar -xzf ./xcoc-linux-x86_64.tar.gz -C xcoc-1.0.0-linux
+cd xcoc-1.0.0-linux
 # 安装程序到 /usr/local/bin 和 unit 到 /etc/systemd/system，登记并立即启动服务。
 sudo sh packaging/linux/install.sh
 # 确认 Client 版本、内置媒体运行时及当前服务状态。

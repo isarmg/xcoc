@@ -19,7 +19,7 @@ xcos 的摄像头边缘客户端。在摄像头所在网络保存设备凭据、
 
 ## 如何快速部署
 
-在 [下载页](https://github.com/isarmg/xcoc/releases) 选择平台和版本并核对同版 `SHA256SUMS`。当前源码候选为 1.1.3，尚未发布。已公开 [v1.1.2](https://github.com/isarmg/xcoc/releases/tag/v1.1.2) 包含桌面和移动资产；本轮 CLI 和 iOS 修复需按下节从同版源码构建，不能宣称旧包包含这些行为。
+在 [下载页](https://github.com/isarmg/xcoc/releases) 选择平台和版本并核对同版 `SHA256SUMS`。当前源码候选为 1.0.0，尚未发布。本次重新建立 1.0.0 发行基线；当前请使用同版源码构建，新下载资产以发行完成后的实际文件为准。
 
 Linux 在解压目录或完成编译的源码根目录执行：
 

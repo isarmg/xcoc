@@ -135,7 +135,7 @@ pub unsafe extern "C" fn xcoc_call_v1(
     input_len: usize,
     output: *mut XcscFfiResultV1,
 ) -> i32 {
-    // SAFETY: The caller supplies the revision 2 buffers described above.
+    // SAFETY: The caller supplies the revision 1 buffers described above.
     unsafe {
         ffi::guard(output, || {
             call_impl(handle, ffi::checked_utf8(input, input_len, 65536)?)

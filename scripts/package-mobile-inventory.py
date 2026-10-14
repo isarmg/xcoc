@@ -80,7 +80,7 @@ def package(artifacts,output,platform,gradle_export=None):
     graphs=[]
     if platform=='android':
         with tempfile.TemporaryDirectory(prefix=product+'-android-runtime-') as temporary:
-            tools=module.checkout_tools(Path(temporary)/'tools',environment)
+            tools=module.checkout_tools(Path(temporary).resolve(strict=True)/'tools',environment)
             producer=module.load_tool('gradle_sbom',tools)
             bom=producer.produce(json.loads(Path(gradle_export).read_text()),output,product,version,revision)
         graphs.append({'bom':str(bom),'files':managed})

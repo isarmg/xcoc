@@ -109,7 +109,7 @@ final class CameraEncoder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if status != noErr { throw RustBridge.NativeError.failed }
         } catch {
             running = false
-            if let ownerGeneration, owner?.isCurrent(ownerGeneration) == true { onFailure?(ownerGeneration) }
+            if lifecycle.isCurrent(captureGeneration), self.ownerGeneration == generation, owner.isCurrent(generation) { onFailure?(generation) }
         }
     }
     private func encoded(_ sample: CMSampleBuffer, generation: UUID) {

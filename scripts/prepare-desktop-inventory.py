@@ -29,7 +29,7 @@ def prepare(stage,work,target,runtime_path,*,components=(),build_input_root=None
     shutil.copyfile(ROOT/'packaging/native/sources.json',material)
     files=[inventory.file_binding(stage,{'path':runtime_path,'archive_entry':None})]
     with tempfile.TemporaryDirectory(prefix='xcoc-native-origins-') as temporary:
-        tools=inventory.checkout_tools(Path(temporary)/'tools',environment)
+        tools=inventory.checkout_tools(Path(temporary).resolve(strict=True)/'tools',environment)
         native=inventory.load_tool('static_native_receipt',tools)
         captured=native.record(Path(work),stage,target_files=files,build_input_root=build_input_root,
                                target=target,inventory_relative='share')
