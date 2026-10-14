@@ -206,6 +206,19 @@ jobs:
       - name: Verify locked client support boundary
         if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: python scripts/check-xcsc-source.py
+      - name: Install pinned Node.js for runtime dependency inventory
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.7.0
+          check-latest: false
+      - name: Install exact Cargo inventory tools
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-audit --version 0.22.2
+          cargo install --locked cargo-cyclonedx --version 0.5.9
       - name: Build reviewed native media libraries
         if: ${{ needs.scope.outputs.run_full != 'false' }}
         uses: ./.github/actions/native-media
