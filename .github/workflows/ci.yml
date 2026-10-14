@@ -74,10 +74,17 @@ jobs:
           persist-credentials: false
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          lane: ${{ github.job }}
       - name: Verify locked client support boundary
         run: python scripts/check-xcsc-source.py
       - name: Build reviewed native media libraries
         uses: ./.github/actions/native-media
+      - name: Check CI cache and aggregate result contracts
+        run: |
+          python3 scripts/test-ci-cache.py
+          python3 scripts/test-ci-inventory-tools.py
       - name: Check mobile release packaging contract
         run: python3 -m unittest discover -s packaging/mobile/tests
       - name: Guard iOS capture lifecycle ordering
@@ -123,6 +130,9 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install 1.99.0 --profile minimal --target aarch64-linux-android
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          lane: ${{ github.job }}
       - name: Verify locked client support boundary
         run: python scripts/check-xcsc-source.py
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
@@ -147,30 +157,67 @@ jobs:
       - name: Build and retain Android Release artifacts
         uses: ./.github/actions/package-android-release
 
-  ios:
+  ios-validation:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.run_full != 'false' }}
-    name: iOS native camera
+    name: iOS ${{ matrix.configuration }} camera
     permissions:
       contents: read
     runs-on: macos-15
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Start simulator while Rust builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          simulator_id="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for group in json.load(sys.stdin)["devices"].values() for d in group if d.get("isAvailable") and d["name"].startswith("iPhone")))')"
+          echo "XCOC_IOS_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+          # simctl boot requests startup without waiting for the full boot.
+          # xcodebuild waits for readiness later, on this same (uncloned) device.
+          xcrun simctl boot "$simulator_id" || xcrun simctl bootstatus "$simulator_id" -b
       - run: rustup toolchain install 1.99.0 --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          lane: ios
       - name: Verify locked client support boundary
         run: python scripts/check-xcsc-source.py
       - run: bash scripts/build-ios-rust.sh
       - run: brew install xcodegen
       - run: cd clients/ios && xcodegen generate
       - name: Build and test simulator application
+        if: matrix.configuration == 'Debug'
         run: |
-          simulator_id="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for group in json.load(sys.stdin)["devices"].values() for d in group if d.get("isAvailable") and d["name"].startswith("iPhone")))')"
-          xcodebuild -project clients/ios/XcocCamera.xcodeproj -scheme XcocCamera -sdk iphonesimulator -destination "id=$simulator_id" CODE_SIGNING_ALLOWED=NO -derivedDataPath clients/ios/DerivedData test
+          simulator_id="$XCOC_IOS_SIMULATOR_ID"
+          xcodebuild -project clients/ios/XcocCamera.xcodeproj -scheme XcocCamera -sdk iphonesimulator -destination "id=$simulator_id" CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO -derivedDataPath clients/ios/DerivedData test
       - name: Build and retain iOS Release artifacts
+        if: matrix.configuration == 'Release'
         uses: ./.github/actions/package-ios-release
+
+  ios:
+    name: iOS native camera
+    needs: [scope, ios-validation]
+    if: ${{ always() }}
+    permissions: {}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every iOS configuration
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          RUN_FULL: ${{ needs.scope.outputs.run_full }}
+          VALIDATION_RESULT: ${{ needs.ios-validation.result }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          if [ "$RUN_FULL" != false ]; then
+            test "$VALIDATION_RESULT" = success
+          fi
 
   native-build:
     needs: scope
@@ -203,6 +250,10 @@ jobs:
       - name: Install exact Rust toolchain
         if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: rustup toolchain install 1.99.0 --profile minimal
+      - uses: ./.github/actions/rust-build-cache
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
+        with:
+          lane: native
       - name: Verify locked client support boundary
         if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: python scripts/check-xcsc-source.py
@@ -212,13 +263,17 @@ jobs:
         with:
           node-version: 26.7.0
           check-latest: false
-      - name: Install exact Cargo inventory tools
+      - name: Restore exact inventory tool binaries
+        id: inventory-tools
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/inventory-tools
+          key: inventory-tools-v1-${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ hashFiles('scripts/ci-inventory-tools.py') }}
+      - name: Install or verify exact Cargo inventory tools
         if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         shell: bash
-        run: |
-          set -euo pipefail
-          cargo install --locked cargo-audit --version 0.22.2
-          cargo install --locked cargo-cyclonedx --version 0.5.9
+        run: python scripts/ci-inventory-tools.py --root "$RUNNER_TEMP/inventory-tools" --cache-hit "${{ steps.inventory-tools.outputs.cache-hit == 'true' }}"
       - name: Build reviewed native media libraries
         if: ${{ needs.scope.outputs.run_full != 'false' }}
         uses: ./.github/actions/native-media
