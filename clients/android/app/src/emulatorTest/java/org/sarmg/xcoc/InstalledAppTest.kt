@@ -15,8 +15,17 @@ class InstalledAppTest : InstrumentationTestCase() {
             instrumentation.waitForIdleSync()
             assertFalse(activity.isFinishing)
             instrumentation.runOnMainSync { activity.finish() }
-            instrumentation.waitForIdleSync()
-            assertTrue(activity.isFinishing)
+            // An idle main queue does not imply the asynchronous finish transaction
+            // has destroyed the Activity. Relaunching sooner can deliver to the
+            // finishing task (START_DELIVERED_TO_TOP), leaving startActivitySync
+            // waiting forever for an instance that Android did not create.
+            val destroyed = java.util.concurrent.atomic.AtomicBoolean(false)
+            val deadline = android.os.SystemClock.uptimeMillis() + 10_000
+            while (!destroyed.get() && android.os.SystemClock.uptimeMillis() < deadline) {
+                instrumentation.runOnMainSync { destroyed.set(activity.isDestroyed) }
+                if (!destroyed.get()) android.os.SystemClock.sleep(50)
+            }
+            assertTrue("Activity destruction did not complete before relaunch", destroyed.get())
         }
     }
 
