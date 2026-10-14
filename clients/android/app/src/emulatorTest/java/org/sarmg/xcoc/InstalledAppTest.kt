@@ -41,6 +41,7 @@ class InstalledAppTest : InstrumentationTestCase() {
         val permissionPackages = setOf("com.android.permissioncontroller", "com.google.android.permissioncontroller")
         val deadline = android.os.SystemClock.uptimeMillis() + 5_000
         var denied = false
+        var unexpectedPrompt = false
         while (android.os.SystemClock.uptimeMillis() < deadline) {
             val root = automation.rootInActiveWindow
             if (root?.packageName?.toString() in permissionPackages) {
@@ -48,8 +49,17 @@ class InstalledAppTest : InstrumentationTestCase() {
                 val messages = permissionPackages.flatMap {
                     root.findAccessibilityNodeInfosByViewId("$it:id/permission_message")
                 }
-                assertTrue("Unexpected system permission prompt; refusing to interact",
-                    messages.any { it.text?.toString()?.contains("notification", ignoreCase = true) == true })
+                // The window is published before its message/button nodes are
+                // necessarily populated. Wait for a positively identified prompt;
+                // never click an incomplete or different permission request.
+                if (messages.none { it.text?.toString()?.contains("notification", ignoreCase = true) == true }) {
+                    if (messages.any { !it.text.isNullOrBlank() }) {
+                        unexpectedPrompt = true
+                        break
+                    }
+                    android.os.SystemClock.sleep(50)
+                    continue
+                }
                 // Android uses a distinct deny resource after a previous denial.
                 // Both exact IDs are defined by PermissionController and its CTS.
                 val denyIds = listOf("permission_deny_button", "permission_deny_and_dont_ask_again_button")
@@ -67,12 +77,28 @@ class InstalledAppTest : InstrumentationTestCase() {
             android.os.SystemClock.sleep(50)
         }
         val dismissedDeadline = android.os.SystemClock.uptimeMillis() + 5_000
-        while (automation.rootInActiveWindow?.packageName?.toString() in permissionPackages &&
+        while (!unexpectedPrompt && automation.rootInActiveWindow?.packageName?.toString() in permissionPackages &&
             android.os.SystemClock.uptimeMillis() < dismissedDeadline) {
             android.os.SystemClock.sleep(50)
         }
-        assertFalse("System permission dialog remained over the installed application",
-            automation.rootInActiveWindow?.packageName?.toString() in permissionPackages)
+        if (unexpectedPrompt || automation.rootInActiveWindow?.packageName?.toString() in permissionPackages) {
+            val nodes = StringBuilder()
+            fun describe(node: android.view.accessibility.AccessibilityNodeInfo?, depth: Int) {
+                if (node == null || depth > 12 || nodes.length > 32_000) return
+                nodes.append(" ".repeat(depth)).append(node.toString()).append('\n')
+                for (index in 0 until node.childCount) describe(node.getChild(index), depth + 1)
+            }
+            describe(automation.rootInActiveWindow, 0)
+            instrumentation.targetContext.openFileOutput("permission-ui.txt", 0).bufferedWriter().use {
+                it.write(nodes.toString())
+            }
+            automation.takeScreenshot()?.let { bitmap ->
+                instrumentation.targetContext.openFileOutput("permission-ui.png", 0).use {
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                }
+            }
+            fail("Permission dialog was not safely identified/dismissed; denied=$denied; UI=$nodes")
+        }
         android.util.Log.i("XcocInstalledTest", "Notification prompt denied=$denied; system dialog dismissed")
     }
 

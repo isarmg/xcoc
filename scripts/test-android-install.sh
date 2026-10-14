@@ -15,6 +15,11 @@ pid=""
 adb() { timeout --kill-after=2s 20s "$sdk/platform-tools/adb" -s "$serial" "$@"; }
 cleanup() {
   adb logcat -d > "$output/logcat.txt" 2>&1 || true
+  for diagnostic in permission-ui.txt permission-ui.png; do
+    if ! adb exec-out run-as org.sarmg.xcoc cat "files/$diagnostic" > "$output/$diagnostic" 2>/dev/null; then
+      rm -f "$output/$diagnostic"
+    fi
+  done
   adb emu kill || true
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
