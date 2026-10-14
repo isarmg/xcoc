@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bind the actual release runtime graph to its final staged native files."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -16,6 +17,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_REPOSITORY = 'https://github.com/isarmg/xssi.git'
+_TOOL_CONTEXT = []
 
 
 def clean_environment():
@@ -63,14 +65,37 @@ def exported_source(destination, revision, environment):
     return destination
 
 
-def load_tool(name, directory):
-    spec = importlib.util.spec_from_file_location('xssi_release_' + name, directory / 'scripts' / (name + '.py'))
-    module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(directory / 'scripts'))
+@contextmanager
+def tool_imports(directory):
+    """Keep direct and delayed helper imports in this reviewed checkout."""
+    scripts = Path(directory).resolve(strict=True) / 'scripts'
+    if scripts.is_symlink() or not scripts.is_dir():
+        raise ValueError('release tools require their physical script directory')
+    names = {path.stem for path in scripts.glob('*.py') if path.stem.isidentifier()}
+    previous_path = list(sys.path)
+    previous_modules = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+    _TOOL_CONTEXT.append(scripts)
+    sys.path.insert(0, str(scripts))
     try:
-        spec.loader.exec_module(module)
+        yield
     finally:
-        sys.path.pop(0)
+        for name in names:
+            sys.modules.pop(name, None)
+        sys.modules.update(previous_modules)
+        sys.path[:] = previous_path
+        _TOOL_CONTEXT.pop()
+
+
+def load_tool(name, directory):
+    scripts = Path(directory).resolve(strict=True) / 'scripts'
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name) or not _TOOL_CONTEXT or _TOOL_CONTEXT[-1] != scripts:
+        raise ValueError('release tools must execute within their reviewed import scope')
+    path = scripts / (name + '.py')
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('release tool must be its physical reviewed source file')
+    spec = importlib.util.spec_from_file_location('xssi_release_' + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
     return module
 
 
@@ -108,54 +133,55 @@ def generate(stage, *, product, version, revision, target, root_name,
         private = Path(temporary).resolve(strict=True)
         tools = checkout_tools(private / 'tools', environment)
         source = exported_source(private / 'source', revision, environment)
-        producer = load_tool('sbom', tools)
-        finalizer = load_tool('release_sbom', tools)
-        manifest = PurePosixPath(manifest_relative)
-        if manifest.is_absolute() or str(manifest) != manifest_relative or '..' in manifest.parts or '\\' in manifest_relative:
-            raise ValueError('release Cargo manifest must be within the exported source')
-        bom = producer.produce_runtime_cargo_bom(source, source / manifest_relative,
-            root_name, stage, 'runtime', [(source, revision)], target=target,
-            features=features, default_features=default_features,
-            environment=environment)
-        runtime_bindings=[file_binding(stage,value) for value in runtime_files]
-        all_components=list(components)
-        normalized=json.loads(bom.read_text(encoding='utf-8'))
-        if any(item.get('name')=='libsqlite3-sys' for item in normalized.get('components',[])):
-            native=load_tool('sqlite_receipt',tools)
-            all_components.append(native.record(source,stage,'runtime',files=runtime_bindings,
-                                                inventory_relative=inventory_relative))
-        destination=PurePosixPath(inventory_relative)
-        if destination.is_absolute() or str(destination)!=inventory_relative or '..' in destination.parts or '\\' in inventory_relative:
-            raise ValueError('native dependency inventory must stay within its actual package layout')
-        if inventory_relative!='share':
-            folder=stage/inventory_relative;folder.mkdir(mode=0o755,parents=True,exist_ok=True)
-            for path in (bom,stage/'share/THIRD_PARTY_RUNTIME_LICENSES.txt'):
-                target_path=folder/path.name
-                if target_path.exists():raise ValueError('native dependency inventory would replace an existing payload file')
-                shutil.move(path,target_path)
-            bom=folder/bom.name
-            (stage/'share').rmdir()
-        root = json.loads(bom.read_text(encoding='utf-8'))['metadata']['component']['bom-ref']
-        receipt = {'format_version': 1,
-                   'runtime_roots': [{'ref': root, 'files': runtime_bindings}],
-                   'components': all_components}
-        boms=[bom]
-        for graph in additional_runtime_graphs:
-            if set(graph)!={'bom','files'}:
-                raise ValueError('additional runtime graph differs from its current contract')
-            path=Path(graph['bom']).resolve(strict=True)
-            if not path.is_relative_to(stage):
-                raise ValueError('additional runtime graph must be in the final release stage')
-            root=json.loads(path.read_text(encoding='utf-8'))['metadata']['component']['bom-ref']
-            boms.append(path)
-            receipt['runtime_roots'].append({'ref':root,'files':[
-                file_binding(stage,value) for value in graph['files']]})
-        receipt_path = private / 'external-components.json'
-        receipt_path.write_text(json.dumps(receipt),encoding='utf-8')
-        result = finalizer.finalize(stage, boms, receipt_path, product, version,
-                                    revision, target, build_input_root=build_input_root,
-                                    package_symlinks=package_symlinks,
-                                    output_relative=output_relative)
+        with tool_imports(tools):
+            producer = load_tool('sbom', tools)
+            finalizer = load_tool('release_sbom', tools)
+            manifest = PurePosixPath(manifest_relative)
+            if manifest.is_absolute() or str(manifest) != manifest_relative or '..' in manifest.parts or '\\' in manifest_relative:
+                raise ValueError('release Cargo manifest must be within the exported source')
+            bom = producer.produce_runtime_cargo_bom(source, source / manifest_relative,
+                root_name, stage, 'runtime', [(source, revision)], target=target,
+                features=features, default_features=default_features,
+                environment=environment)
+            runtime_bindings=[file_binding(stage,value) for value in runtime_files]
+            all_components=list(components)
+            normalized=json.loads(bom.read_text(encoding='utf-8'))
+            if any(item.get('name')=='libsqlite3-sys' for item in normalized.get('components',[])):
+                native=load_tool('sqlite_receipt',tools)
+                all_components.append(native.record(source,stage,'runtime',files=runtime_bindings,
+                                                    inventory_relative=inventory_relative))
+            destination=PurePosixPath(inventory_relative)
+            if destination.is_absolute() or str(destination)!=inventory_relative or '..' in destination.parts or '\\' in inventory_relative:
+                raise ValueError('native dependency inventory must stay within its actual package layout')
+            if inventory_relative!='share':
+                folder=stage/inventory_relative;folder.mkdir(mode=0o755,parents=True,exist_ok=True)
+                for path in (bom,stage/'share/THIRD_PARTY_RUNTIME_LICENSES.txt'):
+                    target_path=folder/path.name
+                    if target_path.exists():raise ValueError('native dependency inventory would replace an existing payload file')
+                    shutil.move(path,target_path)
+                bom=folder/bom.name
+                (stage/'share').rmdir()
+            root = json.loads(bom.read_text(encoding='utf-8'))['metadata']['component']['bom-ref']
+            receipt = {'format_version': 1,
+                       'runtime_roots': [{'ref': root, 'files': runtime_bindings}],
+                       'components': all_components}
+            boms=[bom]
+            for graph in additional_runtime_graphs:
+                if set(graph)!={'bom','files'}:
+                    raise ValueError('additional runtime graph differs from its current contract')
+                path=Path(graph['bom']).resolve(strict=True)
+                if not path.is_relative_to(stage):
+                    raise ValueError('additional runtime graph must be in the final release stage')
+                root=json.loads(path.read_text(encoding='utf-8'))['metadata']['component']['bom-ref']
+                boms.append(path)
+                receipt['runtime_roots'].append({'ref':root,'files':[
+                    file_binding(stage,value) for value in graph['files']]})
+            receipt_path = private / 'external-components.json'
+            receipt_path.write_text(json.dumps(receipt),encoding='utf-8')
+            result = finalizer.finalize(stage, boms, receipt_path, product, version,
+                                        revision, target, build_input_root=build_input_root,
+                                        package_symlinks=package_symlinks,
+                                        output_relative=output_relative)
     if run(['git', 'rev-parse', 'HEAD'], ROOT, environment) != revision or run(['git', 'status', '--porcelain', '--untracked-files=all'], ROOT, environment):
         raise ValueError('source changed while computing the release inventory')
     return result

@@ -18,9 +18,10 @@ def main():
     inventory=importlib.util.module_from_spec(spec);spec.loader.exec_module(inventory)
     with tempfile.TemporaryDirectory(prefix='xsoc-bootstrap-inventory-') as temporary:
         private=Path(temporary).resolve(strict=True);tools=inventory.checkout_tools(private/'tools',inventory.clean_environment())
-        extractor=inventory.load_tool('native_package',tools)
-        payload,_=extractor.msi_payload(args.bootstrap_msi.resolve(strict=True),private/'msi',include_embedded=True)
-        shutil.copytree(payload,args.stage)
+        with inventory.tool_imports(tools):
+            extractor=inventory.load_tool('native_package',tools)
+            payload,_=extractor.msi_payload(args.bootstrap_msi.resolve(strict=True),private/'msi',include_embedded=True)
+            shutil.copytree(payload,args.stage)
 
 
 if __name__=='__main__':main()

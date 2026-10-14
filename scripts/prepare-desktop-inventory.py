@@ -30,9 +30,10 @@ def prepare(stage,work,target,runtime_path,*,components=(),build_input_root=None
     files=[inventory.file_binding(stage,{'path':runtime_path,'archive_entry':None})]
     with tempfile.TemporaryDirectory(prefix='xcoc-native-origins-') as temporary:
         tools=inventory.checkout_tools(Path(temporary).resolve(strict=True)/'tools',environment)
-        native=inventory.load_tool('static_native_receipt',tools)
-        captured=native.record(Path(work),stage,target_files=files,build_input_root=build_input_root,
-                               target=target,inventory_relative='share')
+        with inventory.tool_imports(tools):
+            native=inventory.load_tool('static_native_receipt',tools)
+            captured=native.record(Path(work),stage,target_files=files,build_input_root=build_input_root,
+                                   target=target,inventory_relative='share')
     return inventory.generate(stage,product='xcoc',version=version,revision=revision,target=target,
         root_name='xcoc',runtime_files=[{'path':runtime_path,'archive_entry':None}],
         components=[*captured,*components],build_input_root=build_input_root)

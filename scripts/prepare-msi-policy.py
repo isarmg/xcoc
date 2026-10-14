@@ -21,9 +21,10 @@ def main():
     environment=inventory.clean_environment();revision=inventory.run(['git','rev-parse','HEAD'],ROOT,environment)
     with tempfile.TemporaryDirectory(prefix='client-msi-policy-') as temporary:
         tools=inventory.checkout_tools(Path(temporary).resolve(strict=True)/'tools',environment)
-        module=inventory.load_tool('msi_policy',tools)
-        (args.stage/'share').mkdir(mode=0o755,exist_ok=True)
-        module.create(source,args.stage,args.version,revision)
+        with inventory.tool_imports(tools):
+            module=inventory.load_tool('msi_policy',tools)
+            (args.stage/'share').mkdir(mode=0o755,exist_ok=True)
+            module.create(source,args.stage,args.version,revision)
 
 
 if __name__=='__main__':main()

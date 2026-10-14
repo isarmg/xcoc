@@ -33,10 +33,11 @@ def main():
     args.build_input_root.mkdir(mode=0o700,parents=True,exist_ok=False)
     with tempfile.TemporaryDirectory(prefix='client-wix-inventory-') as temporary:
         tools=inventory.checkout_tools(Path(temporary).resolve(strict=True)/'tools',inventory.clean_environment())
-        producer=inventory.load_tool('wix_runtime',tools)
-        cache=Path(os.environ.get('NUGET_PACKAGES',str(Path.home()/'.nuget/packages')))
-        components=producer.stage_runtime(args.stage,args.bootstrap_msi,args.build_input_root,
-            cache=cache,owned_inputs=args.owned_input,packages=packages)
+        with inventory.tool_imports(tools):
+            producer=inventory.load_tool('wix_runtime',tools)
+            cache=Path(os.environ.get('NUGET_PACKAGES',str(Path.home()/'.nuget/packages')))
+            components=producer.stage_runtime(args.stage,args.bootstrap_msi,args.build_input_root,
+                cache=cache,owned_inputs=args.owned_input,packages=packages)
     with args.output.open('x') as output:json.dump(components,output,sort_keys=True);output.write('\n')
 
 
