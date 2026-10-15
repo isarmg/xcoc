@@ -2386,6 +2386,17 @@ fn collect_resolved_cameras(
                             "Camera resolution or stream probing failed.",
                             device_error_code(&error),
                         )?;
+                        // A failed source probe must release a stalled local
+                        // encoder. Otherwise is_alive() keeps reusing it on
+                        // every retry, even though it no longer produces media.
+                        // Publisher failures alone still preserve the capture.
+                        if current.resolved.as_ref().is_some_and(|device| {
+                            device.streams.iter().any(|stream| {
+                                matches!(stream.source, device::MediaSource::Local(_))
+                            })
+                        }) {
+                            current.resolved = None;
+                        }
                         current.mark_error(safe_error(&error));
                     }
                 }

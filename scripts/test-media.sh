@@ -72,4 +72,10 @@ export XCOC_TEST_CLIENT_EXE="$(cd "${CARGO_TARGET_DIR:-target}/debug" && pwd)/xc
 "$XCOC_TEST_CLIENT_EXE" media-worker --check
 cargo test --locked --lib local_camera::tests::one_capture -- --ignored
 cargo test --locked --bin xcoc native_recorders_finalize_on_shutdown_reload_and_disable -- --ignored
+# Linux-only local capture fixture: native timeout, replacement and healthy reuse.
+if [ "$(uname -s)" = Linux ]; then
+    capture_encoder="$(command -v ffmpeg)"
+    test -x "$capture_encoder"
+    XCOC_TEST_CAPTURE_ENCODER="$capture_encoder" cargo test --locked --bin xcoc failed_local_source_probe_releases_capture_before_retry -- --exact tests::failed_local_source_probe_releases_capture_before_retry
+fi
 cargo test --locked --lib rtsp_publish::tests::native_h264 -- --ignored

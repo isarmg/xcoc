@@ -1730,3 +1730,165 @@ async fn reconfiguration_cancels_old_ptz_before_waiting_for_media_finalization()
     );
     assert!(outcome.unwrap_err().is_cancelled());
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn failed_local_source_probe_releases_capture_before_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    const FIXTURE: &str = "XCOC_CAPTURE_RETRY_FIXTURE";
+    let Ok(directory) = std::env::var(FIXTURE) else {
+        // Isolate PATH substitution in a new test process, never mutate the
+        // environment of concurrently running tests or open a physical camera.
+        let directory = tempdir();
+        let ffmpeg = directory.path().join("ffmpeg");
+        fs::write(&ffmpeg, r#"#!/bin/sh
+printf '%s' "$$" > "$XCOC_CAPTURE_RETRY_FIXTURE/capture.pid"
+if [ -e "$XCOC_CAPTURE_RETRY_FIXTURE/started" ] && [ -n "$XCOC_TEST_CAPTURE_ENCODER" ]; then
+    exec "$XCOC_TEST_CAPTURE_ENCODER" -nostdin -v error -re -f lavfi -i testsrc2=size=320x240:rate=10 -c:v libx264 -tune zerolatency -g 10 -f mpegts pipe:1
+fi
+touch "$XCOC_CAPTURE_RETRY_FIXTURE/started"
+exec sleep 30
+"#).unwrap();
+        fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o700)).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::failed_local_source_probe_releases_capture_before_retry",
+                "--nocapture",
+            ])
+            .env(FIXTURE, directory.path())
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    directory.path().display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let camera: Camera =
+        serde_json::from_str(include_str!("../../config/camera-local-linux.json.example")).unwrap();
+    let client = reqwest::Client::new();
+    let device = camera.adapter().resolve(&client).await.unwrap();
+    let old_url = device.stream_source("main").unwrap();
+    let device::MediaSource::Local(relay) = old_url else {
+        panic!("local source expected")
+    };
+    let old_relay = Arc::downgrade(&relay);
+    drop(relay);
+    let pid_path = Path::new(&directory).join("capture.pid");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !pid_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let old_pid: i32 = fs::read_to_string(&pid_path).unwrap().parse().unwrap();
+    let mut current = new_runtime_camera();
+    current.resolved = Some(device);
+    current.mark_error("media process exited; retrying".into());
+    // Reuse the existing live capture as launch_due_cameras does. A failed
+    // source probe must invalidate it, unlike the initial publisher failure.
+    let mut reprobe = current.resolved.clone().unwrap();
+    let probe = Path::new(&directory).join("probe");
+    fs::write(&probe, "#!/bin/sh\ncat >/dev/null\nexit 1\n").unwrap();
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o700)).unwrap();
+    // When supplied by media CI/local validation, also exercise the actual
+    // native worker's stalled-input timeout and successful replacement probe.
+    let native_validation = std::env::var_os("XCOC_TEST_CLIENT_EXE").is_some()
+        && std::env::var_os("XCOC_TEST_CAPTURE_ENCODER").is_some();
+    let probe = std::env::var_os("XCOC_TEST_CLIENT_EXE")
+        .filter(|_| native_validation)
+        .map(PathBuf::from)
+        .unwrap_or(probe);
+    let result = reprobe.probe_streams(&probe).await;
+    assert!(result.is_err());
+    drop(reprobe);
+    assert!(old_relay.upgrade().unwrap().is_alive());
+    let id = camera.id;
+    let generation = current.generation;
+    current.resolving = true;
+    let mut runtime = HashMap::from([(id, current)]);
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(async move { (id, generation, result.map(|_| unreachable!())) });
+    while !tasks.is_empty() {
+        tokio::task::yield_now().await;
+        collect_resolved_cameras(&mut tasks, &mut runtime).unwrap();
+    }
+    assert!(
+        runtime[&id].resolved.is_none(),
+        "failed probe kept the stalled capture for the next retry"
+    );
+    assert!(runtime[&id].should_resolve(runtime[&id].retry_at));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        // SAFETY: signal 0 only observes the synthetic capture child.
+        while unsafe { libc::kill(old_pid, 0) } == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("old capture was not released");
+    assert!(old_relay.upgrade().is_none());
+    fs::remove_file(&pid_path).unwrap();
+    let mut replacement = camera.adapter().resolve(&client).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !pid_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let new_pid: i32 = fs::read_to_string(pid_path).unwrap().parse().unwrap();
+    assert_ne!(old_pid, new_pid, "retry did not start a fresh capture");
+    if !native_validation {
+        fs::write(&probe, "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"width\":320}]}'\n").unwrap();
+    }
+    replacement
+        .probe_streams(&probe)
+        .await
+        .expect("fresh capture did not recover");
+    assert_eq!(replacement.streams[0].descriptor.width, Some(320));
+
+    // A publisher output failure alone must not discard healthy local capture.
+    // Successful source reprobe keeps the exact same relay (and recorder feed).
+    let current = runtime.get_mut(&id).unwrap();
+    current.resolved = Some(replacement.clone());
+    current.mark_error("publisher output failed".into());
+    let device::MediaSource::Local(healthy_relay) = replacement.stream_source("main").unwrap()
+    else {
+        panic!("local source expected");
+    };
+    assert!(healthy_relay.is_alive());
+    replacement.probe_streams(&probe).await.unwrap();
+    let generation = current.generation;
+    current.resolving = true;
+    tasks.spawn(async move { (id, generation, Ok(replacement)) });
+    while !tasks.is_empty() {
+        tokio::task::yield_now().await;
+        collect_resolved_cameras(&mut tasks, &mut runtime).unwrap();
+    }
+    let device::MediaSource::Local(retained) = runtime[&id]
+        .resolved
+        .as_ref()
+        .unwrap()
+        .stream_source("main")
+        .unwrap()
+    else {
+        panic!("local source expected");
+    };
+    assert!(Arc::ptr_eq(&healthy_relay, &retained));
+    assert!(retained.is_alive());
+    assert!(runtime[&id].error.is_none());
+}
