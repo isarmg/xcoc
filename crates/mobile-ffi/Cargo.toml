@@ -14,7 +14,7 @@ jni-host-tests = ["dep:jni", "xcsc/jni"]
 
 [dependencies]
 xcoc = { path = "../.." }
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "6fca4299f5c34a79db1c7bd4e889b418d2a58e2d", version = "=1.0.0", features = ["mobile-ffi"] }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "5db1c7a1ee6d086ada1f1e564e31709b764fe221", version = "=1.0.0", features = ["mobile-ffi"] }
 base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,7 +24,7 @@ jni = { version = "=0.22.4", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "=0.22.4"
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "6fca4299f5c34a79db1c7bd4e889b418d2a58e2d", version = "=1.0.0", features = ["jni", "mobile-ffi"] }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "5db1c7a1ee6d086ada1f1e564e31709b764fe221", version = "=1.0.0", features = ["jni", "mobile-ffi"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

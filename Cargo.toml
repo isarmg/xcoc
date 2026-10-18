@@ -11,7 +11,7 @@ members = [".", "crates/mobile-ffi"]
 resolver = "3"
 
 [dependencies]
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "6fca4299f5c34a79db1c7bd4e889b418d2a58e2d", version = "=1.0.0" }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "5db1c7a1ee6d086ada1f1e564e31709b764fe221", version = "=1.0.0" }
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.23"
@@ -31,7 +31,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 zeroize = { version = "1.9.1", features = ["derive"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "6fca4299f5c34a79db1c7bd4e889b418d2a58e2d", version = "=1.0.0" }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "5db1c7a1ee6d086ada1f1e564e31709b764fe221", version = "=1.0.0" }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "=0.8.1"
